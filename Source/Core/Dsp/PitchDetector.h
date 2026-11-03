@@ -1,5 +1,6 @@
 // 声の高さの検出（YIN）。
 // 低い標本化周波数に落とした音の、決まった長さの窓を 1 フレームずつ受け取り、そのフレームの値をすぐ返す（先の音は見ない）。
+// 飛び止め: 有声が続いている途中で前のフレームから大きく跳んだら、前の高さに近い谷を選び直す。
 #pragma once
 
 #include <vector>
@@ -19,7 +20,7 @@ public:
     // fs: 受け取る音の標本化周波数。lowestMin: 探す範囲の下限の一番低い値（その分のメモリを確保する）
     void prepare (float fs, float lowestMin);
 
-    // 探す範囲を変える
+    // 探す範囲を変える（前のフレームの記憶も消える）
     void configure (float fmin, float fmax);
 
     // 1 フレームの窓の長さ（標本数）。窓の最後が、今のいちばん新しい標本
@@ -32,6 +33,7 @@ private:
     float fs = 16000.0f;
     int tauMin = 0, tauMax = 0;
     std::vector<float> diff, cmnd;
+    float lastF0 = 0.0f;  // 前のフレームの声の高さ（無声なら 0）
 
     float refineTau (int tau) const;
 };

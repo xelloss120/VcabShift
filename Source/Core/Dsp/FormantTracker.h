@@ -1,5 +1,5 @@
 // F1〜F4 の追いかけ。約 16kHz に落とした音の 25ms の窓から LPC を求め、根から山を選ぶ。
-// 追いかけられないときは 150ms 保ち、その後 50ms で目印へ戻る。
+// 追いかけられないときは 150ms 保ち、その後 50ms で目印へ戻る。1 フレームで大きく跳んだ値は、2 フレーム続くまで受け入れない。
 #pragma once
 
 #include <array>
@@ -45,6 +45,8 @@ private:
     std::array<int, 4> missing {};       // 追いかけられなかったフレームの数
     std::array<double, 4> glideFrom {};  // 目印へ戻り始めたときの値
     std::array<bool, 4> prevTracked {};
+    std::array<double, 4> lastRaw {};    // 前のフレームで選んだ値（ならす前）
+    std::array<int, 4> jumpCount {};     // 大きく跳んだ値を保留したフレームの数
 
     bool computeLpc (const float* x);
     void findRoots();

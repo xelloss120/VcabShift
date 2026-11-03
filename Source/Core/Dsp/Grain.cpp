@@ -9,7 +9,21 @@ namespace vcab
 namespace
 {
 constexpr double kPi = 3.14159265358979323846;
-constexpr float kMaxCorrection = 2.0723266f; // ±18dB（自然対数の振幅）
+
+// ハン窓の値 h の 1 乗・1/2 乗・1/4 乗（窓の分け方はこの 3 つだけなので、累乗の計算をしない）
+float hannPower (float h, int quarters)
+{
+    switch (quarters)
+    {
+        case 4: return h;
+        case 2: return std::sqrt (h);
+        default: return std::sqrt (std::sqrt (h));
+    }
+}
+constexpr float kMaxCorrection = 2.0723266f;  // ±18dB（自然対数の振幅）
+constexpr double kSmoothSeconds = 0.015;      // 補正に使う包絡をならす時定数
+constexpr double kSmoothGapSeconds = 0.050;   // これより空いたら、前の包絡と混ぜない
+constexpr float kGridLowHz = 40.0f;
 constexpr int kMinEnvelopeFft = 512;
 } // namespace
 
@@ -23,8 +37,14 @@ void GrainMaker::prepare (double sampleRate, int maxHalfIn, int maxHalfOut, int 
     spec.assign (static_cast<size_t> (n), {});
     spec2.assign (static_cast<size_t> (n), {});
     envelope.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
-    inverseBins.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
+    targetPos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
+    sourcePos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
     inverseWarp = nullptr;
+    gridLo = std::log2 (kGridLowHz);
+    gridStep = (static_cast<float> (std::log2 (fs * 0.5)) - gridLo) / static_cast<float> (kEnvGrid - 1);
+    for (int g = 0; g < kEnvGrid; ++g)
+        gridHz[static_cast<size_t> (g)] = std::exp2 (gridLo + gridStep * static_cast<float> (g));
+    forgetEnvelope();
     // 伸縮の補間は、元の断片の両側に補間の幅（倍率 4 で 32 標本）が要る
     windowed.assign (static_cast<size_t> (maxIn + 2 * (kZeroCrossings * 4 + 2)), 0.0f);
 
@@ -57,6 +77,18 @@ float GrainMaker::kernelAt (float x) const
         return 0.0f;
     const float t = a - static_cast<float> (i);
     return kernel[static_cast<size_t> (i)] + t * (kernel[static_cast<size_t> (i + 1)] - kernel[static_cast<size_t> (i)]);
+}
+
+float GrainMaker::gridPos (float f) const
+{
+    return std::clamp ((std::log2 (std::max (f, 1.0f)) - gridLo) / gridStep, 0.0f, static_cast<float> (kEnvGrid - 1));
+}
+
+float GrainMaker::envAtPos (const EnvState& st, float pos) const
+{
+    const int i = std::min (static_cast<int> (pos), kEnvGrid - 2);
+    const float t = pos - static_cast<float> (i);
+    return st.smooth[static_cast<size_t> (i)] + t * (st.smooth[static_cast<size_t> (i + 1)] - st.smooth[static_cast<size_t> (i)]);
 }
 
 // 窓をかけた断片の包絡（ケプストラムで、lifter 標本より先を落とす）。m に FFT の大きさを返す
@@ -94,9 +126,15 @@ void GrainMaker::computeEnvelope (const float* w, int n, int lifter, int& m)
 }
 
 void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, float ratio,
-                       const WarpMap* warp, int lifter, float* out, int64_t key)
+                       const WarpMap* warp, int lifter, float* out, int64_t key, int stream, bool powerWindow)
 {
-    // 窓をかけた元の断片（補間の幅の分だけ、両側を 0 で埋める）
+    // 窓をかけた元の断片（補間の幅の分だけ、両側を 0 で埋める）。最後に断片にかかる窓は、ハン窓（powerWindow ならその平方根）。
+    // 補正をかけるときは、その窓の平方根を補正の前と後に 1 回ずつかける（補正でにじんだ端を 0 に戻すため）
+    const bool split = warp != nullptr;
+    // 窓 = ハン窓の何乗か（4 分の何乗かで表す。前にかける分、後にかける分）
+    const int finalQuarters = powerWindow ? 2 : 4;
+    const int preQuarters = split ? finalQuarters / 2 : finalQuarters;
+    const int postQuarters = finalQuarters / 2;
     const int pad = static_cast<int> (std::ceil (kZeroCrossings * std::max (1.0f, ratio))) + 2;
     const int hi = static_cast<int> (std::ceil (halfIn));
     const int n = 2 * hi + 1;
@@ -106,7 +144,10 @@ void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, 
     {
         const float u = static_cast<float> (j) / halfIn;
         if (std::abs (u) < 1.0f)
-            w[pad + hi + j] = seg[centre + j] * 0.5f * (1.0f + std::cos (static_cast<float> (kPi) * u));
+        {
+            const float hann = 0.5f * (1.0f + std::cos (static_cast<float> (kPi) * u));
+            w[pad + hi + j] = seg[centre + j] * hannPower (hann, preQuarters);
+        }
     }
 
     // 伸縮（縮めるときは、帯域を 1/ratio に絞った sinc で補間する）
@@ -132,16 +173,32 @@ void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, 
     if (warp == nullptr)
         return;
 
-    // 補正: 狙いの包絡（写像で動かしたもの）と、一律に伸縮した包絡の差をかける
-    if (! envValid || key != envKey || n != envN || lifter != envLifter)
+    // 補正: 狙いの包絡（写像で動かしたもの）と、一律に伸縮した包絡の差をかける。
+    // 包絡は、同じ流れの前の断片の包絡と混ぜてならす（断片ごとのばらつきで、補正の強弱がちらつかないように）
+    EnvState& st = envState[static_cast<size_t> (stream)];
+    if (! st.valid || key != st.key || n != st.n || lifter != st.lifter)
     {
-        computeEnvelope (w + pad, n, lifter, envM);
-        envValid = true;
-        envKey = key;
-        envN = n;
-        envLifter = lifter;
+        int m = 0;
+        computeEnvelope (w + pad, n, lifter, m);
+        const double gap = static_cast<double> (key - st.key);
+        const bool blend = st.smoothValid && gap > 0.0 && gap <= kSmoothGapSeconds * fs;
+        const float a = blend ? static_cast<float> (std::exp (-gap / (kSmoothSeconds * fs))) : 0.0f;
+        for (int g = 0; g < kEnvGrid; ++g)
+        {
+            const float f = gridHz[static_cast<size_t> (g)];
+            const float pos = std::min (f * static_cast<float> (m) / static_cast<float> (fs), static_cast<float> (m / 2) - 1.001f);
+            const int i = static_cast<int> (pos);
+            const float t = pos - static_cast<float> (i);
+            const float e = envelope[static_cast<size_t> (i)] + t * (envelope[static_cast<size_t> (i + 1)] - envelope[static_cast<size_t> (i)]);
+            auto& sm = st.smooth[static_cast<size_t> (g)];
+            sm = a * sm + (1.0f - a) * e;
+        }
+        st.smoothValid = true;
+        st.valid = true;
+        st.key = key;
+        st.n = n;
+        st.lifter = lifter;
     }
-    const int m = envM;
     const int lpad = std::max (lifter, 1);
     const int mo = Fft::nextPow2 (no + 2 * lpad);
     std::fill (spec2.begin(), spec2.begin() + mo, Fft::Complex {});
@@ -149,35 +206,36 @@ void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, 
         spec2[static_cast<size_t> (lpad + i)] = out[i];
     fft.transform (spec2.data(), mo, false);
 
-    const float nyq = static_cast<float> (fs * 0.5);
-    auto envAt = [&] (float f)
-    {
-        const float pos = std::clamp (f, 0.0f, nyq) * static_cast<float> (m) / static_cast<float> (fs);
-        const int i = std::min (static_cast<int> (pos), m / 2 - 1);
-        const float t = pos - static_cast<float> (i);
-        return envelope[static_cast<size_t> (i)] + t * (envelope[static_cast<size_t> (i + 1)] - envelope[static_cast<size_t> (i)]);
-    };
-    if (warp != inverseWarp || warp->version() != inverseVersion || mo != inverseSize)
+    if (warp != inverseWarp || warp->version() != inverseVersion || mo != inverseSize || ratio != inverseRatio)
     {
         for (int b = 0; b <= mo / 2; ++b)
-            inverseBins[static_cast<size_t> (b)] = warp->inverse (static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo));
+        {
+            const float f = static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo);
+            targetPos[static_cast<size_t> (b)] = gridPos (warp->inverse (f));
+            sourcePos[static_cast<size_t> (b)] = gridPos (f / ratio);
+        }
         inverseWarp = warp;
         inverseVersion = warp->version();
         inverseSize = mo;
+        inverseRatio = ratio;
     }
     for (int b = 0; b <= mo / 2; ++b)
     {
-        const float f = static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo);
-        const float c = std::clamp (envAt (inverseBins[static_cast<size_t> (b)]) - envAt (f / ratio), -kMaxCorrection, kMaxCorrection);
+        const float c = std::clamp (envAtPos (st, targetPos[static_cast<size_t> (b)]) - envAtPos (st, sourcePos[static_cast<size_t> (b)]),
+                                    -kMaxCorrection, kMaxCorrection);
         const float g = std::exp (c);
         spec2[static_cast<size_t> (b)] *= g;
         if (b > 0 && b < mo / 2)
             spec2[static_cast<size_t> (mo - b)] *= g;
     }
     fft.transform (spec2.data(), mo, true);
-    // 断片の外へ出る裾は捨てる（遅延を増やさないため）
+    // 断片の外へ出る裾は捨てる（遅延を増やさないため）。端で途切れないよう、後の窓をかける
     for (int i = 0; i < no; ++i)
-        out[i] = spec2[static_cast<size_t> (lpad + i)].real() / static_cast<float> (mo);
+    {
+        const float u = static_cast<float> (i - halfOut) / static_cast<float> (halfOut);
+        const float hann = 0.5f * (1.0f + std::cos (static_cast<float> (kPi) * u));
+        out[i] = spec2[static_cast<size_t> (lpad + i)].real() / static_cast<float> (mo) * (split ? hannPower (hann, postQuarters) : 1.0f);
+    }
 }
 
 } // namespace vcab

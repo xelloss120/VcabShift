@@ -17,7 +17,8 @@ constexpr double kPreEmphasis = 0.97;
 constexpr double kMaxBandwidth = 700.0;  // Hz。これより広い根は山とみなさない
 constexpr double kHoldSeconds = 0.150;
 constexpr double kGlideSeconds = 0.050;
-constexpr double kSmoothSeconds = 0.010;
+constexpr double kSmoothSeconds = 0.020;
+constexpr double kJumpSemitones = 3.0;   // 追いかけていた値から 1 フレームでこれ以上跳んだら、2 フレーム続くまで受け入れない
 constexpr double kF4OverF3 = 3500.0 / 2700.0;
 // F1・F2 が 1 つにまとまった山の扱い
 constexpr double kMergeLo = 550.0, kMergeHi = 1300.0, kMergeMaxBw = 400.0, kMergeRatio = 1.3, kMergePenaltyBw = 300.0;
@@ -49,6 +50,8 @@ void FormantTracker::reset (const std::array<float, 4>& anchors)
     {
         value[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
         missing[static_cast<size_t> (i)] = std::numeric_limits<int>::max() / 2;
+        lastRaw[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
+        jumpCount[static_cast<size_t> (i)] = 0;
         glideFrom[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
         prevTracked[static_cast<size_t> (i)] = false;
     }
@@ -267,8 +270,17 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
             continue;
         }
 
+        // 飛び止め: 追いかけている途中で前のフレームから大きく跳んだら、次のフレームも同じなら受け入れる（それまでは前の値を保つ）
+        if (tracked && prevTracked[uk] && std::abs (std::log2 (target / lastRaw[uk])) * 12.0 >= kJumpSemitones && jumpCount[uk] < 1)
+        {
+            ++jumpCount[uk];
+            out.tracked[uk] = true;
+            continue;
+        }
         if (tracked)
         {
+            jumpCount[uk] = 0;
+            lastRaw[uk] = target;
             const bool wasHeld = missing[uk] <= holdFrames;
             if (prevTracked[uk] || wasHeld)
                 value[uk] = std::exp (std::log (value[uk]) + alpha * (std::log (target) - std::log (value[uk])));

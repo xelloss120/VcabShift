@@ -56,6 +56,7 @@ private:
         int64_t t = 0;
         float period = 0.0f;
         bool voiced = false;
+        int64_t ready = 0;    // この印が決まる入力の時刻（これより前の時点では使わない。ブロックの大きさで結果が変わらないように）
     };
 
     double fs = 48000.0;
@@ -85,6 +86,9 @@ private:
     int64_t frameCount = 0;     // 分析したフレームの数
     int64_t nextFrameAt = 0;    // 次のフレームを分析する入力の時刻
     float levelPeak = -120.0f;
+    bool voicedState = false;   // ならした後の有声・無声
+    int voicingChange = 0;      // 判定が voicedState と違ったフレームが続いた数
+    float lastVoicedF0 = 0.0f;  // 最後に有声と判定したフレームの高さ
 
     std::vector<Mark> marks;
     int64_t markCount = 0;
@@ -122,9 +126,12 @@ private:
     void placeMarks();
     void synthesize (int64_t blockStart, int64_t blockEnd);
     void writeGrain (std::vector<float>& acc, double centreOut, int halfOut, int64_t from);
-    bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, bool correct, int lifter);
-    const Frame& frameAt (double t) const;
-    bool voicedThroughout (int64_t from, int64_t to) const;
+    bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, bool correct, int lifter, int stream, bool powerWindow);
+    // t に一番近いフレーム。availInPos を渡すと、入力がその時刻まで届いた時点で分析済みのフレームに限る
+    const Frame& frameAt (double t, int64_t availInPos = INT64_MAX) const;
+    double frameCentre (int64_t j) const;      // j 番目のフレームの窓の中心の時刻
+    int64_t inPosWhenKnown (double t) const;   // 時刻 t のフレームが分析される入力の時刻
+    bool voicedThroughout (int64_t from, int64_t to, int64_t availInPos) const;
     float ratioFor (const Frame& f);
 
     float x (int64_t t) const { return t < 0 ? 0.0f : xRing[static_cast<size_t> (t & xMask)]; }

@@ -3,6 +3,7 @@
 // キーは Params.cpp の key（例: pitch=12 formant=6 warp_mode=2）。
 // --align: 遅延の分を詰めて、入力と時刻をそろえる。
 // --track: 5ms ごとの声の高さと F1〜F4 を CSV に書く（遅延の分を詰めた時刻）。
+// --block: 1 回に処理する標本の数（初期値 256。リアルタイムの環境の違いを試すため）。
 #include "Engine.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -15,12 +16,13 @@ static int run (int argc, char** argv)
 {
     if (argc < 3)
     {
-        std::printf ("usage: vcabsh_render in.wav out.wav [key=value ...] [--align] [--track out.csv]\n");
+        std::printf ("usage: vcabsh_render in.wav out.wav [key=value ...] [--align] [--track out.csv] [--block n]\n");
         return 1;
     }
 
     auto values = vcab::defaultValues();
     bool align = false;
+    int block = 256;
     std::string trackPath;
     for (int i = 3; i < argc; ++i)
     {
@@ -28,6 +30,11 @@ static int run (int argc, char** argv)
         if (a == "--align")
         {
             align = true;
+            continue;
+        }
+        if (a == "--block" && i + 1 < argc)
+        {
+            block = std::max (1, std::stoi (argv[++i]));
             continue;
         }
         if (a == "--track" && i + 1 < argc)
@@ -66,7 +73,7 @@ static int run (int argc, char** argv)
     juce::AudioBuffer<float> input (numCh, len);
     reader->read (&input, 0, len, 0, true, true);
 
-    constexpr int kBlock = 256;
+    const int kBlock = block;
     vcab::Engine engine;
     engine.prepare (fs, kBlock);
     engine.setSettings (vcab::Settings::fromValues (values));
