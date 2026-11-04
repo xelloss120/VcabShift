@@ -20,6 +20,7 @@ inline const juce::Colour kDim { 0xff7a8494 };
 inline const juce::Colour kInputColour { 0xff4fa3e0 };  // 入力: 青
 inline const juce::Colour kOutputColour { 0xfff0a040 }; // 出力: 橙
 inline const juce::Colour kWarpColour { 0xffe870a8 };   // フォルマントの動く量: 桃（アイコンの帯も同じ色）
+inline const juce::Colour kUnvoicedColour { 0xff39414f }; // 有声・無声の履歴の、無声の部分: 暗い灰色
 
 inline constexpr float kFont = VCLookAndFeel::kMinFontSize;
 inline constexpr int kMargin = 8;

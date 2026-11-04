@@ -1,6 +1,6 @@
 // 声の高さの検出（YIN）。
 // 低い標本化周波数に落とした音の、決まった長さの窓を 1 フレームずつ受け取り、そのフレームの値をすぐ返す（先の音は見ない）。
-// 飛び止め: 有声が続いている途中で前のフレームから大きく跳んだら、前の高さに近い谷を選び直す。
+// 飛び止め: 有声が続いている途中で前のフレームから大きく跳んだら、前の高さに近い谷を選び直す（条件は analyze の中）。
 #pragma once
 
 #include <vector>
@@ -34,6 +34,7 @@ private:
     int tauMin = 0, tauMax = 0;
     std::vector<float> diff, cmnd;
     float lastF0 = 0.0f;  // 前のフレームの声の高さ（無声なら 0）
+    int corrections = 0;  // 飛び止めで続けて直したフレームの数
 
     float refineTau (int tau) const;
 };

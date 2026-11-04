@@ -24,6 +24,11 @@ struct EngineStatus
     std::array<std::atomic<float>, 4> formant {};
     std::array<std::atomic<bool>, 4> tracked {};
     std::atomic<int> channel { 0 };
+
+    // 有声・無声の履歴（フレームごと。番号 % kVoicingHistory の位置に書く）。voicingCount はこれまでのフレームの数
+    static constexpr int kVoicingHistory = 1024;
+    std::array<std::atomic<bool>, kVoicingHistory> voicing {};
+    std::atomic<int64_t> voicingCount { 0 };
 };
 
 class Engine

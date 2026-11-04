@@ -279,7 +279,9 @@ void Engine::analyzeFrame()
         tracker.analyze (scratch.data(), false, anchors, f.fm);
     f.voiced = pitch.voiced;
     f.period = pitch.voiced ? static_cast<float> (fs / pitch.f0) : 0.0f;
+    stat.voicing[static_cast<size_t> (frameCount % EngineStatus::kVoicingHistory)].store (pitch.voiced);
     ++frameCount;
+    stat.voicingCount.store (frameCount);
     stat.f0.store (pitch.voiced ? pitch.f0 : 0.0f);
     for (int k = 0; k < 4; ++k)
     {

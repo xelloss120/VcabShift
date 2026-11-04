@@ -12,7 +12,9 @@ namespace
 constexpr float kSilentRms = 0.001f;   // -60dBFS より小さい窓は無声とする
 constexpr float kThreshold = 0.15f;    // この値を最初に下回る谷を選ぶ
 constexpr float kVoicedLimit = 0.25f;  // 選んだ谷がこれより深ければ有声
+constexpr float kUnvoicedLimit = 0.35f; // 有声が続いていて高さも近いときは、選んだ谷がこれより浅くなるまで無声にしない
 constexpr float kJumpSemitones = 5.0f; // 前のフレームからこれ以上跳んだら、間違いを疑う
+constexpr int kMaxCorrections = 4;     // 飛び止めで続けて直せるフレームの数（これを超えたら本当に変わったとみなす）
 } // namespace
 
 void PitchDetector::prepare (float sampleRate, float lowestMin)
@@ -99,15 +101,25 @@ PitchResult PitchDetector::analyze (const float* x)
     }
 
     PitchResult r;
-    if (best >= 0 && cmnd[static_cast<size_t> (best)] < kVoicedLimit)
+    if (best >= 0)
     {
-        r.voiced = true;
-        r.f0 = fs / refineTau (best);
+        const float depth = cmnd[static_cast<size_t> (best)];
+        const float f = fs / refineTau (best);
+        // ヒステリシス: 有声が続いていて高さも近ければ、kUnvoicedLimit まで有声のままにする（浅い谷で別の高さへ跳ばないように）
+        const bool continues = lastF0 > 0.0f && depth < kUnvoicedLimit && std::abs (12.0f * std::log2 (f / lastF0)) < kJumpSemitones;
+        if (depth < kVoicedLimit || continues)
+        {
+            r.voiced = true;
+            r.f0 = f;
+        }
     }
 
     // 飛び止め: 有声が続いている途中で大きく跳んだら、前の高さから ±kJumpSemitones の範囲で一番深い谷を探す。
-    // 有声とみなせる深さならそちらに直し、なければ本当に変わったとみなす（間違った高さに張り付かないように）
-    if (r.voiced && lastF0 > 0.0f && std::abs (12.0f * std::log2 (r.f0 / lastF0)) >= kJumpSemitones)
+    // 有声とみなせる深さならそちらに直し、なければ本当に変わったとみなす（間違った高さに張り付かないように）。
+    // 周期 T の声には 2T にも同じくらい深い谷があるので、短い周期へ跳ぶときは、前の高さの谷のほうが深いときだけ直す。
+    // 続けて直すのは kMaxCorrections フレームまで
+    bool corrected = false;
+    if (r.voiced && lastF0 > 0.0f && corrections < kMaxCorrections && std::abs (12.0f * std::log2 (r.f0 / lastF0)) >= kJumpSemitones)
     {
         const float range = std::exp2 (kJumpSemitones / 12.0f);
         const int lo = std::max (tauMin, static_cast<int> (std::ceil (fs / lastF0 / range)));
@@ -120,9 +132,14 @@ PitchResult PitchDetector::analyze (const float* x)
             if (localMin && (near < 0 || c < cmnd[static_cast<size_t> (near)]))
                 near = tau;
         }
-        if (near >= 0 && cmnd[static_cast<size_t> (near)] < kVoicedLimit)
+        if (near >= 0 && cmnd[static_cast<size_t> (near)] < kVoicedLimit
+            && (near <= best || cmnd[static_cast<size_t> (near)] < cmnd[static_cast<size_t> (best)]))
+        {
             r.f0 = fs / refineTau (near);
+            corrected = true;
+        }
     }
+    corrections = corrected ? corrections + 1 : 0;
     lastF0 = r.voiced ? r.f0 : 0.0f;
     return r;
 }

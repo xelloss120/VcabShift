@@ -36,7 +36,8 @@ SpectrumView::SpectrumView (VcabShiftProcessor& p) : proc (p)
     setTooltip (utf8 ("青: 入力、橙: 出力のスペクトル（左の目盛り）。\n"
                       "桃の線: 周波数ごとに、フォルマントのつまみからさらに動かす量（右の目盛り。0 はつまみのとおり）。\n"
                       "F1〜F4 の点を上下にドラッグ（左右は声に合わせて動きます）。動かし方が「帯域固定」のときは、上下左右にドラッグ。\n"
-                      "ホイールで 0.5 半音ずつ。ダブルクリックで 0 に戻します。"));
+                      "ホイールで 0.5 半音ずつ。ダブルクリックで 0 に戻します。\n"
+                      "下端の帯: 直近 3 秒の有声（青）と無声（灰）。右端が今で、左へ流れます（周波数の目盛りとは関係ありません）。"));
     updateWarp();
     startTimerHz (30);
 }
@@ -321,6 +322,32 @@ void SpectrumView::paint (juce::Graphics& g)
         }
                 g.setColour (kWarpColour);
         g.strokePath (path, juce::PathStrokeType (2.2f));
+    }
+
+    // 有声・無声の履歴（下端の帯。右端が今。スペクトルの線に隠れないよう、線より手前に描く）
+    {
+        constexpr int kFrames = 600; // 5ms ごとに 3 秒
+        const auto strip = a.withTop (a.getBottom() - 5.0f);
+        g.setColour (kUnvoicedColour);
+        g.fillRect (strip);
+        g.setColour (kInputColour);
+        const auto& st = proc.status();
+        const int64_t count = st.voicingCount.load();
+        const float frameWidth = strip.getWidth() / kFrames;
+        const int frames = static_cast<int> (std::min<int64_t> (kFrames, count));
+        auto voicedAt = [&] (int i) { return st.voicing[static_cast<size_t> ((count - 1 - i) % vcab::EngineStatus::kVoicingHistory)].load(); };
+        // 続いている有声を 1 つの四角で描く（フレームごとに描くと、継ぎ目がまだらになる）
+        for (int i = 0; i < frames; ++i)
+        {
+            if (! voicedAt (i))
+                continue;
+            int end = i + 1;
+            while (end < frames && voicedAt (end))
+                ++end;
+            const float x0 = strip.getRight() - frameWidth * static_cast<float> (end);
+            g.fillRect (juce::Rectangle<float> (x0, strip.getY(), frameWidth * static_cast<float> (end - i), strip.getHeight()));
+            i = end;
+        }
     }
     g.restoreState();
 
