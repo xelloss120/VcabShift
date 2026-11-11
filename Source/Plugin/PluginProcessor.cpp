@@ -21,10 +21,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout VcabShiftProcessor::createLa
                     range.setSkewForCentre (p.skewCentre);
                 const auto unit = u8 (p.unit);
                 const int decimals = p.step >= 1.0f ? 0 : 1;
+                // ピッチとフォルマントは、半音に倍率（%）を併記する（+12 半音 = 200%）。打ち込んだ文字は先頭の数を半音として読む
+                const std::string key = p.key;
+                const bool ratio = key == "pitch" || key == "formant" || key == "unvoiced_formant";
                 layout.add (std::make_unique<juce::AudioParameterFloat> (
                     id, u8 (p.name), range, p.defaultValue,
                     juce::AudioParameterFloatAttributes().withLabel (unit).withStringFromValueFunction (
-                        [decimals, unit] (float v, int) { return juce::String (v, decimals) + " " + unit; })));
+                        [decimals, unit, ratio] (float v, int)
+                        {
+                            auto s = juce::String (v, decimals) + " " + unit;
+                            if (ratio)
+                                s << juce::String::fromUTF8 ("（") << juce::roundToInt (100.0 * std::exp2 (v / 12.0)) << juce::String::fromUTF8 ("%）");
+                            return s;
+                        })));
                 break;
             }
             case vcab::ParamType::integer:

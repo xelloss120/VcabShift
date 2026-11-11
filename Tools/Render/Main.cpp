@@ -4,10 +4,15 @@
 // --align: 遅延の分を詰めて、入力と時刻をそろえる。
 // --track: 5ms ごとの声の高さと F1〜F4 を CSV に書く（遅延の分を詰めた時刻）。
 // --block: 1 回に処理する標本の数（初期値 256。リアルタイムの環境の違いを試すため）。
+// --marks: 置いた有声の印ごとの { 時刻（標本、入力の時刻）, 周期, 有声, 相互相関の値 } を CSV に書く。
+// --frames: 決まったフレームごとの { 窓の中心の時刻（秒、入力の時刻）, 有声, 高さ } を CSV に書く。
+// 終わりに、ブロックごとの処理時間の最大と 99.9% 点も出す（途切れの目安。ブロックの長さに対する割合）。
+// --lookahead n / --octave-jump p: ピッチ検出の先読みのフレームの数と、オクターブ跳びの確率（開発用。初期値 2 / 0.001）。
 #include "Engine.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -23,7 +28,8 @@ static int run (int argc, char** argv)
     auto values = vcab::defaultValues();
     bool align = false;
     int block = 256;
-    std::string trackPath;
+    std::string trackPath, framesPath, marksPath, grainsPath;
+    vcab::Engine::Tuning tuning;
     for (int i = 3; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -35,6 +41,36 @@ static int run (int argc, char** argv)
         if (a == "--block" && i + 1 < argc)
         {
             block = std::max (1, std::stoi (argv[++i]));
+            continue;
+        }
+        if (a == "--no-cues")
+        {
+            tuning.voicingCues = false;
+            continue;
+        }
+        if (a == "--grains" && i + 1 < argc)
+        {
+            grainsPath = argv[++i];
+            continue;
+        }
+        if (a == "--marks" && i + 1 < argc)
+        {
+            marksPath = argv[++i];
+            continue;
+        }
+        if (a == "--frames" && i + 1 < argc)
+        {
+            framesPath = argv[++i];
+            continue;
+        }
+        if (a == "--lookahead" && i + 1 < argc)
+        {
+            tuning.pitchLookahead = std::stoi (argv[++i]);
+            continue;
+        }
+        if (a == "--octave-jump" && i + 1 < argc)
+        {
+            tuning.octaveJump = std::stof (argv[++i]);
             continue;
         }
         if (a == "--track" && i + 1 < argc)
@@ -75,6 +111,19 @@ static int run (int argc, char** argv)
 
     const int kBlock = block;
     vcab::Engine engine;
+    std::vector<std::array<float, 3>> frameLog;
+    engine.setTuning (tuning);
+    if (! framesPath.empty())
+        frameLog.reserve (static_cast<size_t> (len / (0.005 * fs)) + 16);
+    engine.setFrameLog (framesPath.empty() ? nullptr : &frameLog);
+    std::vector<std::array<double, 4>> markLog;
+    if (! marksPath.empty())
+        markLog.reserve (static_cast<size_t> (len / 40) + 16);
+    engine.setMarkLog (marksPath.empty() ? nullptr : &markLog);
+    std::vector<std::array<double, 4>> grainLog;
+    if (! grainsPath.empty())
+        grainLog.reserve (static_cast<size_t> (len / 20) + 16);
+    engine.setGrainLog (grainsPath.empty() ? nullptr : &grainLog);
     engine.prepare (fs, kBlock);
     engine.setSettings (vcab::Settings::fromValues (values));
     const int latency = engine.latencySamples();
@@ -89,6 +138,11 @@ static int run (int argc, char** argv)
         track << "time,f0,f1,f2,f3,f4,t1,t2,t3,t4\n";
     }
 
+    std::vector<double> blockSecs;
+    blockSecs.reserve (static_cast<size_t> (total / kBlock) + 2);
+    // プラグイン（PluginProcessor::processBlock）と同じく、非正規化数を 0 として扱う（無音でフィルターの値が
+    // 非正規化数になると計算が遅くなり、負荷の測り方がプラグインと変わるため）
+    juce::ScopedNoDenormals noDenormals;
     const auto start = std::chrono::steady_clock::now();
     int lastTrack = -1;
     for (int pos = 0; pos < total; pos += kBlock)
@@ -110,7 +164,9 @@ static int run (int argc, char** argv)
         else if (pos >= len)
             for (int c = 0; c < 2; ++c)
                 chans[c] = zeros.data();
+        const auto t0 = std::chrono::steady_clock::now();
         engine.process (chans, std::min (numCh, 2), out.data() + pos, n);
+        blockSecs.push_back (std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count());
 
         if (track.is_open())
         {
@@ -146,7 +202,47 @@ static int run (int argc, char** argv)
     const int outLen = align ? len : total;
     writer->writeFromFloatArrays (&p, 1, outLen);
 
+    if (! framesPath.empty())
+    {
+        std::ofstream fl (framesPath);
+        fl << "t,voiced,f0" << std::endl;
+        for (const auto& r : frameLog)
+            fl << r[0] << "," << r[1] << "," << r[2] << '\n';
+    }
+
+    if (! marksPath.empty())
+    {
+        std::ofstream ml (marksPath);
+        ml << "t,period,voiced,score" << std::endl;
+        for (const auto& r : markLog)
+            ml << static_cast<int64_t> (r[0]) << "," << r[1] << "," << r[2] << "," << r[3] << std::endl;
+    }
+
+    if (! grainsPath.empty())
+    {
+        std::ofstream gl (grainsPath);
+        gl << "out,src,period" << std::endl;
+        for (const auto& r : grainLog)
+            gl << static_cast<int64_t> (r[0]) << "," << static_cast<int64_t> (r[1]) << "," << r[2] << std::endl;
+    }
+
     std::printf ("latency %d samples (%.2f ms), cpu %.2f%% of realtime\n", latency, latency * 1000.0 / fs, 100.0 * secs / (len / fs));
+    if (! blockSecs.empty())
+    {
+        std::vector<double> sorted (blockSecs);
+        std::sort (sorted.begin(), sorted.end());
+        const double blockLen = kBlock / fs;
+        const double worst = sorted.back();
+        const double p999 = sorted[std::min (sorted.size() - 1, static_cast<size_t> (0.999 * static_cast<double> (sorted.size())))];
+        // 最初の 1 秒（準備の直後でキャッシュなどが温まっていない間）を除いた最大と、その位置
+        const size_t skip = std::min (blockSecs.size() - 1, static_cast<size_t> (fs / kBlock));
+        const auto it = std::max_element (blockSecs.begin() + static_cast<std::ptrdiff_t> (skip), blockSecs.end());
+        const double later = *it;
+        const double at = static_cast<double> (std::distance (blockSecs.begin(), it)) * kBlock / fs;
+        std::printf ("block max %.1f us (%.1f%% of block), p99.9 %.1f us (%.1f%%), after 1s max %.1f us (%.1f%%) at %.2fs, %zu blocks\n",
+                     worst * 1.0e6, 100.0 * worst / blockLen, p999 * 1.0e6, 100.0 * p999 / blockLen,
+                     later * 1.0e6, 100.0 * later / blockLen, at, sorted.size());
+    }
     return 0;
 }
 

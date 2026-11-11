@@ -1,6 +1,7 @@
 // 開発用の画面の撮影ツール。WAV を実際の時間の速さで流しながら、プラグインの画面を PNG に書き出す。
 //   vcabsh_shot 入力.wav 出力.png [キー=値 ...] [--at 秒]
 // --at: 何秒流したところで撮るか（初期値 2 秒）
+// --tooltip x,y: 画面の中の (x, y) にマウスを乗せたときのツールチップも描き込む（出る位置の確かめ用）
 #include "PluginProcessor.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -18,10 +19,17 @@ static int run (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI gui;
 
     double at = 2.0;
+    juce::Point<int> tipAt { -1, -1 };
     auto processor = std::make_unique<VcabShiftProcessor>();
     for (int i = 3; i < argc; ++i)
     {
         const std::string a = argv[i];
+        if (a == "--tooltip" && i + 1 < argc)
+        {
+            const auto xy = juce::StringArray::fromTokens (argv[++i], ",", "");
+            tipAt = { xy[0].getIntValue(), xy[1].getIntValue() };
+            continue;
+        }
         if (a == "--at" && i + 1 < argc)
         {
             at = std::stod (argv[++i]);
@@ -85,7 +93,23 @@ static int run (int argc, char** argv)
         juce::MessageManager::getInstance()->runDispatchLoopUntil (16);
     }
 
-    const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
+    auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
+    if (tipAt.x >= 0)
+    {
+        auto* c = editor->getComponentAt (tipAt);
+        auto* client = dynamic_cast<juce::TooltipClient*> (c);
+        const auto tip = client != nullptr ? client->getTooltip() : juce::String();
+        if (tip.isNotEmpty())
+        {
+            auto& lf = editor->getLookAndFeel();
+            const auto b = lf.getTooltipBounds (tip, tipAt, editor->getLocalBounds());
+            juce::Graphics g (image);
+            g.setColour (juce::Colours::red);
+            g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre (tipAt.toFloat())); // マウスの位置
+            g.setOrigin (b.getPosition());
+            lf.drawTooltip (g, tip, b.getWidth(), b.getHeight());
+        }
+    }
     const juce::File outFile { juce::String (juce::CharPointer_UTF8 (argv[2])) };
     outFile.deleteFile();
     juce::FileOutputStream out (outFile);

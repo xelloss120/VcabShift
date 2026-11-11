@@ -14,7 +14,7 @@ constexpr int kLabelInset = 5;        // Label の文字の左の余白（JUCE �
 constexpr int kLabelGap = 12;         // 名前と部品の隙間
 
 // 画面に出すパラメータ（F1〜F4 の差と位置は、グラフの点で操作する）
-const vcab::P kRows[] = { vcab::P::pitch, vcab::P::formant, vcab::P::warpMode, vcab::P::aboveF4,
+const vcab::P kRows[] = { vcab::P::pitch, vcab::P::formant, vcab::P::unvoicedFormant, vcab::P::warpMode, vcab::P::aboveF4, vcab::P::unvoicedAboveF4,
                           vcab::P::pitchMin, vcab::P::pitchMax, vcab::P::inputChannel };
 } // namespace
 
@@ -22,6 +22,7 @@ VcabShiftEditor::VcabShiftEditor (VcabShiftProcessor& p)
     : AudioProcessorEditor (p), proc (p), spectrum (p)
 {
     setLookAndFeel (&lookAndFeel);
+    lookAndFeel.setTooltipAvoid (&spectrum, this); // グラフの説明は、グラフの外に出す
     auto& apvts = proc.state();
 
     for (auto id : kRows)
@@ -175,9 +176,9 @@ void VcabShiftEditor::resized()
         input->label.setBounds (h.removeFromRight (labelWidth ({ vcab::P::inputChannel })));
     }
 
-    // 操作の帯（2 行 3 列）: ピッチ・フォルマント ｜ 探索下限・探索上限 ｜ 動かし方・F4以降
+    // 操作の帯（3 行 3 列）: ピッチ・有声フォルマント・無声フォルマント ｜ 探索下限・探索上限 ｜ 動かし方・有声F4以降・無声F4以降
     // 右の列の選択欄は、中の文字が切れない幅（2 つのうち広いほう）にそろえ、残りを左の 2 列で分ける（バーの長さは同じ）
-    stripArea = r.removeFromTop (kStripRow * 2 + 14);
+    stripArea = r.removeFromTop (kStripRow * 3 + 14);
     {
         auto s = stripArea.reduced (10, 7);
         auto comboWidth = [&] (vcab::P id)
@@ -187,10 +188,10 @@ void VcabShiftEditor::resized()
                 w = std::max (w, textWidth (utf8 (c)));
             return w + kComboExtra;
         };
-        const int label1 = labelWidth ({ vcab::P::pitch, vcab::P::formant });
+        const int label1 = labelWidth ({ vcab::P::pitch, vcab::P::formant, vcab::P::unvoicedFormant });
         const int label2 = labelWidth ({ vcab::P::pitchMin, vcab::P::pitchMax });
-        const int label3 = labelWidth ({ vcab::P::warpMode, vcab::P::aboveF4 });
-        const int combo3 = std::max (comboWidth (vcab::P::warpMode), comboWidth (vcab::P::aboveF4));
+        const int label3 = labelWidth ({ vcab::P::warpMode, vcab::P::aboveF4, vcab::P::unvoicedAboveF4 });
+        const int combo3 = std::max ({ comboWidth (vcab::P::warpMode), comboWidth (vcab::P::aboveF4), comboWidth (vcab::P::unvoicedAboveF4) });
         const int gap = 18;
         auto col3 = s.removeFromRight (label3 + combo3);
         s.removeFromRight (gap);
@@ -212,10 +213,12 @@ void VcabShiftEditor::resized()
         };
         place (vcab::P::pitch, col1.removeFromTop (kStripRow), label1, bar);
         place (vcab::P::formant, col1.removeFromTop (kStripRow), label1, bar);
+        place (vcab::P::unvoicedFormant, col1.removeFromTop (kStripRow), label1, bar);
         place (vcab::P::pitchMin, col2.removeFromTop (kStripRow), label2, bar);
         place (vcab::P::pitchMax, col2.removeFromTop (kStripRow), label2, bar);
         place (vcab::P::warpMode, col3.removeFromTop (kStripRow), label3, combo3);
         place (vcab::P::aboveF4, col3.removeFromTop (kStripRow), label3, combo3);
+        place (vcab::P::unvoicedAboveF4, col3.removeFromTop (kStripRow), label3, combo3);
     }
 
     // スペクトル（残り全部）
@@ -225,14 +228,15 @@ void VcabShiftEditor::resized()
 
 void VcabShiftEditor::timerCallback()
 {
-    // 一律のときは F4以降を使わないので、灰色にする
-    if (auto* r = row (vcab::P::aboveF4))
-    {
-        const bool on = proc.currentSettings().warpMode != vcab::WarpMode::uniform;
-        r->label.setAlpha (on ? 1.0f : 0.45f);
-        r->combo->setEnabled (on);
-        r->combo->setAlpha (on ? 1.0f : 0.45f);
-    }
+    // 一律のときは有声F4以降と無声F4以降を使わないので、灰色にする
+    for (auto id : { vcab::P::aboveF4, vcab::P::unvoicedAboveF4 })
+        if (auto* r = row (id))
+        {
+            const bool on = proc.currentSettings().warpMode != vcab::WarpMode::uniform;
+            r->label.setAlpha (on ? 1.0f : 0.45f);
+            r->combo->setEnabled (on);
+            r->combo->setAlpha (on ? 1.0f : 0.45f);
+        }
 
     // 入力チャンネルの「自動」に、いま使っているチャンネルを添える
     if (auto* r = row (vcab::P::inputChannel))

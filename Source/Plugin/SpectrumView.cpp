@@ -9,6 +9,7 @@ namespace
 {
 constexpr float kHitRadius = 11.0f;
 constexpr float kPointRadius = 6.5f;
+constexpr float kUnvoicedOffset = 13.0f; // 無声の点を、有声の点から右へずらして描く量（画素）
 constexpr float kSmooth = 0.6f; // 前のフレームの重み（パワー）
 } // namespace
 
@@ -34,8 +35,11 @@ SpectrumView::SpectrumView (VcabShiftProcessor& p) : proc (p)
     work.assign (kFftSize, {});
 
     setTooltip (utf8 ("青: 入力、橙: 出力のスペクトル（左の目盛り）。\n"
-                      "桃の線: 周波数ごとに、フォルマントのつまみからさらに動かす量（右の目盛り。0 はつまみのとおり）。\n"
-                      "F1〜F4 の点を上下にドラッグ（左右は声に合わせて動きます）。動かし方が「帯域固定」のときは、上下左右にドラッグ。\n"
+                      "桃の線と丸: 有声音で、周波数ごとに有声フォルマントのつまみからさらに動かす量（右の目盛り。0 はつまみのとおり）。\n"
+                      "緑の線とひし形: 無声音（さ行・は行などの息の音）の動く量。目盛りは桃の線と同じく、有声フォルマントのつまみからの差です\n"
+                      "（無声フォルマントが有声フォルマントより 3 半音小さければ、差 0 のひし形は -3 の高さに来ます。ひし形の数字は、無声フォルマントからの差）。\n"
+                      "F1〜F4 の丸を上下にドラッグ（左右は声に合わせて動きます）。動かし方が「帯域固定」のときは、上下左右にドラッグ。\n"
+                      "ひし形は上下だけ（位置は丸と同じで、重ならないよう少し右に描いています）。\n"
                       "ホイールで 0.5 半音ずつ。ダブルクリックで 0 に戻します。\n"
                       "下端の帯: 直近 3 秒の有声（青）と無声（灰）。右端が今で、左へ流れます（周波数の目盛りとは関係ありません）。"));
     updateWarp();
@@ -91,6 +95,7 @@ void SpectrumView::updateWarp()
         for (int k = 0; k < 4; ++k)
             anchors[static_cast<size_t> (k)] = st.formant[static_cast<size_t> (k)].load();
     warp.build (settings.formant, settings.delta, anchors, settings.aboveF4);
+    warpU.build (settings.unvoicedFormant, settings.unvoicedDelta, anchors, settings.unvoicedAboveF4);
 }
 
 juce::Rectangle<float> SpectrumView::plotArea() const
@@ -143,8 +148,10 @@ bool SpectrumView::pointsVisible() const
 
 juce::Point<float> SpectrumView::pointPos (int i) const
 {
-    const float f = warp.anchorPositions()[static_cast<size_t> (i)];
-    return { xForHz (f), yForShift (settings.delta[static_cast<size_t> (i)]) };
+    const float f = warp.anchorPositions()[static_cast<size_t> (i % 4)];
+    // 縦は、有声・無声とも、フォルマントのつまみからの差（無声は無声フォルマントとの違いの分だけずれる）。目盛りの外は端に置く
+    return { xForHz (f) + (i < 4 ? 0.0f : kUnvoicedOffset),
+             yForShift (juce::jlimit (-kShiftRange, kShiftRange, pointOffset (i) + pointDelta (i))) };
 }
 
 int SpectrumView::hitPoint (juce::Point<float> p) const
@@ -153,7 +160,7 @@ int SpectrumView::hitPoint (juce::Point<float> p) const
         return -1;
     int best = -1;
     float bestD = kHitRadius;
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         const float d = pointPos (i).getDistanceFrom (p);
         if (d <= bestD)
@@ -223,7 +230,8 @@ void SpectrumView::paint (juce::Graphics& g)
         };
         legend (kInputColour, "入力");
         legend (kOutputColour, "出力");
-        legend (kWarpColour, "動く量（つまみからの差）");
+        legend (kWarpColour, "有声の動く量（有声フォルマントからの差）");
+        legend (kUnvoicedWarpColour, "無声の動く量");
     }
 
     // 声の高さと遅延（グラフの中の右上）
@@ -309,20 +317,24 @@ void SpectrumView::paint (juce::Graphics& g)
     g.setColour (kOutputColour.withAlpha (0.9f));
     g.strokePath (spectrumPath (outDb), juce::PathStrokeType (1.3f));
 
-    // 動く量の線
+    // 動く量の線（無声を先に描き、有声を手前に）
+    auto warpPath = [&] (const vcab::WarpMap& w, float knob)
     {
         juce::Path path;
         for (float x = a.getX(); x <= a.getRight(); x += 2.0f)
         {
-            const float y = yForShift (juce::jlimit (-kShiftRange, kShiftRange, warp.shiftAt (hzForX (x)) - settings.formant));
+            const float y = yForShift (juce::jlimit (-kShiftRange, kShiftRange, w.shiftAt (hzForX (x)) - knob));
             if (x == a.getX())
                 path.startNewSubPath (x, y);
             else
                 path.lineTo (x, y);
         }
-                g.setColour (kWarpColour);
-        g.strokePath (path, juce::PathStrokeType (2.2f));
-    }
+        return path;
+    };
+    g.setColour (kUnvoicedWarpColour);
+    g.strokePath (warpPath (warpU, settings.formant), juce::PathStrokeType (1.8f)); // 無声も、フォルマントのつまみからの差で描く
+    g.setColour (kWarpColour);
+    g.strokePath (warpPath (warp, settings.formant), juce::PathStrokeType (2.2f));
 
     // 有声・無声の履歴（下端の帯。右端が今。スペクトルの線に隠れないよう、線より手前に描く）
     {
@@ -351,54 +363,87 @@ void SpectrumView::paint (juce::Graphics& g)
     }
     g.restoreState();
 
-    // F1〜F4 の点と数字（数字はほかの点と前の数字を避けて置き、点は数字より手前に描く）
+    // F1〜F4 の点と数字（数字はほかの点と前の数字を避けて置き、点は数字より手前に描く）。0〜3 が有声の丸、4〜7 が無声のひし形
     if (pointsVisible())
     {
         const bool formants = settings.warpMode == vcab::WarpMode::formants;
-        juce::Rectangle<float> circles[4], labels[4];
-        for (int i = 0; i < 4; ++i)
+        constexpr int kPoints = 8;
+        juce::Rectangle<float> circles[kPoints], labels[kPoints];
+        for (int i = 0; i < kPoints; ++i)
         {
             const float r = (i == hoverPoint || i == dragPoint) ? kPointRadius + 2.0f : kPointRadius;
             circles[i] = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (pointPos (i));
         }
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < kPoints; ++i)
         {
             const auto p = pointPos (i);
-            const float f = warp.anchorPositions()[static_cast<size_t> (i)];
-            const float d = settings.delta[static_cast<size_t> (i)];
-            const auto text = "F" + juce::String (i + 1) + " " + juce::String (juce::roundToInt (f)) + "Hz " + utf8 ("差")
-                              + (d >= 0.0f ? "+" : "") + juce::String (d, 1);
+            const float f = warp.anchorPositions()[static_cast<size_t> (i % 4)];
+            const float d = pointDelta (i);
+            const auto diff = utf8 ("差") + (d >= 0.0f ? "+" : "") + juce::String (d, 1);
+            const auto text = i < 4 ? "F" + juce::String (i + 1) + " " + juce::String (juce::roundToInt (f)) + "Hz " + diff
+                                    : utf8 ("無声") + " " + diff;
             const float w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 6.0f;
-            const float offsets[] = { -30.0f, 12.0f, -52.0f, 34.0f, -74.0f, 56.0f };
+            // 点の上下（近い順）、次に左右へずらした所を試し、重ならない最初の所に置く。どこも重なるなら、重なりが一番小さい所
+            const float offsets[] = { -30.0f, 12.0f, -52.0f, 34.0f, -74.0f, 56.0f, -96.0f, 78.0f };
+            const float sides[] = { 0.0f, -(w * 0.5f + 10.0f), w * 0.5f + 10.0f };
             juce::Rectangle<float> box;
-            for (float off : offsets)
+            float bestArea = -1.0f;
+            for (float side : sides)
             {
-                box = juce::Rectangle<float> (p.x - w * 0.5f, p.y + off, w, 18.0f).constrainedWithin (a);
-                bool overlaps = false;
-                for (int j = 0; j < 4; ++j)
-                    overlaps = overlaps || box.intersects (circles[j].expanded (2.0f)) || (j < i && box.intersects (labels[j]));
-                if (! overlaps)
+                for (float off : offsets)
+                {
+                    const auto cand = juce::Rectangle<float> (p.x - w * 0.5f + side, p.y + off, w, 18.0f).constrainedWithin (a);
+                    float area = 0.0f;
+                    for (int j = 0; j < kPoints; ++j)
+                    {
+                        area += cand.getIntersection (circles[j].expanded (2.0f)).getWidth() * cand.getIntersection (circles[j].expanded (2.0f)).getHeight();
+                        if (j < i)
+                            area += cand.getIntersection (labels[j]).getWidth() * cand.getIntersection (labels[j]).getHeight();
+                    }
+                    if (bestArea < 0.0f || area < bestArea)
+                    {
+                        bestArea = area;
+                        box = cand;
+                    }
+                    if (area <= 0.0f)
+                        break;
+                }
+                if (bestArea <= 0.0f)
                     break;
             }
             labels[i] = box;
             g.setColour (kGraph.withAlpha (0.7f));
             g.fillRect (box);
-            g.setColour (kText);
+            g.setColour (i < 4 ? kText : kUnvoicedWarpColour);
             g.drawText (text, box, juce::Justification::centred);
         }
-        for (int i = 0; i < 4; ++i)
+        // 無声のひし形を先に、有声の丸を手前に
+        for (int i = kPoints - 1; i >= 0; --i)
         {
-            if (! formants || tracked[static_cast<size_t> (i)])
+            const auto colour = i < 4 ? kWarpColour : kUnvoicedWarpColour;
+            juce::Path shape;
+            if (i < 4)
+                shape.addEllipse (circles[i]);
+            else
             {
-                g.setColour (kWarpColour);
-                g.fillEllipse (circles[i]);
+                const auto c = circles[i];
+                shape.startNewSubPath (c.getCentreX(), c.getY());
+                shape.lineTo (c.getRight(), c.getCentreY());
+                shape.lineTo (c.getCentreX(), c.getBottom());
+                shape.lineTo (c.getX(), c.getCentreY());
+                shape.closeSubPath();
+            }
+            if (! formants || tracked[static_cast<size_t> (i % 4)])
+            {
+                g.setColour (colour);
+                g.fillPath (shape);
             }
             else
             {
                 g.setColour (kGraph);
-                g.fillEllipse (circles[i]);
-                g.setColour (kWarpColour);
-                g.drawEllipse (circles[i], 2.0f);
+                g.fillPath (shape);
+                g.setColour (colour);
+                g.strokePath (shape, juce::PathStrokeType (2.0f));
             }
         }
     }
@@ -417,7 +462,7 @@ void SpectrumView::mouseMove (const juce::MouseEvent& e)
 {
     const int before = hoverPoint;
     hoverPoint = hitPoint (e.position);
-    setMouseCursor (hoverPoint >= 0 ? (settings.warpMode == vcab::WarpMode::bands ? juce::MouseCursor::UpDownLeftRightResizeCursor
+    setMouseCursor (hoverPoint >= 0 ? (settings.warpMode == vcab::WarpMode::bands && hoverPoint < 4 ? juce::MouseCursor::UpDownLeftRightResizeCursor
                                                                                   : juce::MouseCursor::UpDownResizeCursor)
                                     : juce::MouseCursor::NormalCursor);
     if (before != hoverPoint)
@@ -431,8 +476,8 @@ void SpectrumView::mouseDown (const juce::MouseEvent& e)
     if (dragPoint >= 0)
     {
         drag = Drag::point;
-        begin (deltaId (dragPoint));
-        if (settings.warpMode == vcab::WarpMode::bands)
+        begin (pointDeltaId (dragPoint));
+        if (settings.warpMode == vcab::WarpMode::bands && dragPoint < 4)
             begin (freqId (dragPoint));
     }
     else
@@ -444,9 +489,9 @@ void SpectrumView::mouseDrag (const juce::MouseEvent& e)
     if (drag == Drag::point)
     {
         const int i = dragPoint;
-        const float delta = juce::jlimit (-12.0f, 12.0f, shiftForY (e.position.y));
-        setParam (deltaId (i), delta);
-        if (settings.warpMode == vcab::WarpMode::bands)
+        const float delta = juce::jlimit (-12.0f, 12.0f, shiftForY (e.position.y) - pointOffset (i));
+        setParam (pointDeltaId (i), delta);
+        if (settings.warpMode == vcab::WarpMode::bands && i < 4)
         {
             // 範囲と、隣の点との間隔（1.15 倍）の中に収める
             const auto& r = vcab::kFormantRanges[static_cast<size_t> (i)];
@@ -467,8 +512,8 @@ void SpectrumView::mouseUp (const juce::MouseEvent&)
 {
     if (drag == Drag::point)
     {
-        end (deltaId (dragPoint));
-        if (settings.warpMode == vcab::WarpMode::bands)
+        end (pointDeltaId (dragPoint));
+        if (settings.warpMode == vcab::WarpMode::bands && dragPoint < 4)
             end (freqId (dragPoint));
     }
     drag = Drag::none;
@@ -481,10 +526,10 @@ void SpectrumView::mouseDoubleClick (const juce::MouseEvent& e)
     const int i = hitPoint (e.position);
     if (i < 0)
         return;
-    begin (deltaId (i));
-    setParam (deltaId (i), 0.0f);
-    end (deltaId (i));
-    if (settings.warpMode == vcab::WarpMode::bands)
+    begin (pointDeltaId (i));
+    setParam (pointDeltaId (i), 0.0f);
+    end (pointDeltaId (i));
+    if (settings.warpMode == vcab::WarpMode::bands && i < 4)
     {
         begin (freqId (i));
         setParam (freqId (i), vcab::paramInfo (freqId (i)).defaultValue);
@@ -502,9 +547,9 @@ void SpectrumView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
     const int i = hitPoint (e.position);
     if (i >= 0)
     {
-        begin (deltaId (i));
-        setParam (deltaId (i), juce::jlimit (-12.0f, 12.0f, settings.delta[static_cast<size_t> (i)] + step));
-        end (deltaId (i));
+        begin (pointDeltaId (i));
+        setParam (pointDeltaId (i), juce::jlimit (-12.0f, 12.0f, pointDelta (i) + step));
+        end (pointDeltaId (i));
     }
     updateWarp();
     repaint();

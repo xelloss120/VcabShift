@@ -12,6 +12,11 @@ public:
     VCLookAndFeel();
 
     juce::Rectangle<int> getTooltipBounds (const juce::String& text, juce::Point<int> screenPos, juce::Rectangle<int> parentArea) override;
+
+    // マウスが avoid の上にあるときは、ツールチップを横に広げて背を低くし、avoid の上に出す（グラフを隠さないため）。
+    // avoid の上に入らなければ、窓の一番上から出す（重なるのは avoid の上端だけ）。
+    // parent: ツールチップの窓の親（座標をそろえるため。親がなければ nullptr）
+    void setTooltipAvoid (juce::Component* avoid, juce::Component* parent) { tooltipAvoid = avoid; tooltipParent = parent; }
     void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
 
     juce::Font getLabelFont (juce::Label&) override;
@@ -25,5 +30,7 @@ public:
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
 
 private:
-    juce::TextLayout tooltipLayout (const juce::String& text, juce::Colour colour) const;
+    juce::Component::SafePointer<juce::Component> tooltipAvoid, tooltipParent;
+
+    juce::TextLayout tooltipLayout (const juce::String& text, juce::Colour colour, float width) const;
 };

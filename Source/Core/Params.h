@@ -12,10 +12,13 @@ enum class P : int
 {
     pitch,
     formant,
+    unvoicedFormant,
     warpMode,
     f1Delta, f2Delta, f3Delta, f4Delta,
     f1Freq, f2Freq, f3Freq, f4Freq,
     aboveF4,
+    uf1Delta, uf2Delta, uf3Delta, uf4Delta,
+    unvoicedAboveF4,
     pitchMin,
     pitchMax,
     inputChannel,
@@ -63,6 +66,9 @@ struct Settings
 {
     float pitch = 12.0f;   // 半音
     float formant = 6.0f;  // 半音
+    float unvoicedFormant = 3.0f; // 無声音の分（半音。有声音のフォルマントのつまみの代わりに使う）
+    std::array<float, 4> unvoicedDelta { 0.0f, 0.0f, 0.0f, 0.0f }; // 無声音の F1〜F4 の差（半音。位置は有声と同じ）
+    AboveF4 unvoicedAboveF4 = AboveF4::followUniform;
     WarpMode warpMode = WarpMode::formants;
     std::array<float, 4> delta { 0.0f, 0.0f, 0.0f, 0.0f };          // 半音
     std::array<float, 4> anchor { 500.0f, 1400.0f, 2700.0f, 3500.0f }; // Hz

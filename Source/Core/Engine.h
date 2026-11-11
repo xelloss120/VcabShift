@@ -1,9 +1,10 @@
 // 全体の処理: 入力チャンネルの選択 → 低い標本化周波数に落とす → 5ms ごとにピッチ検出と F1〜F4 の追いかけ
 // → 印付け → TD-PSOLA（有声と無声の 2 つの流れを、10ms で等パワーにつなぐ）。
-// 遅延は「探索下限の周期 × 2」。
+// 遅延は「探索下限の周期 × 2 ＋ ピッチ検出の先読み（2 フレーム、10ms）」。
 #pragma once
 
 #include "Params.h"
+#include "Dsp/Fft.h"
 #include "Dsp/FormantTracker.h"
 #include "Dsp/Grain.h"
 #include "Dsp/PitchDetector.h"
@@ -45,6 +46,22 @@ public:
     double sampleRate() const { return fs; }
     const EngineStatus& status() const { return stat; }
 
+    // 開発用の調整（prepare の前に呼ぶ。パラメータではない）
+    struct Tuning
+    {
+        int pitchLookahead = 2;     // ピッチ検出の先読みのフレームの数（1 フレーム 5ms）
+        float octaveJump = 0.001f;
+        bool voicingCues = true;    // 有声・無声の判定に、周期性以外の手がかり（帯域の比、音量）を使う  // ピッチ検出の HMM の、1 フレームで 1 オクターブ跳ぶ確率（0.01 では速い抑揚の途中で 1 フレームだけ倍の高さへ跳んだ）
+    };
+    void setTuning (const Tuning& t) { tuning = t; }
+
+    // 開発用: 決まったフレームごとに { 窓の中心の時刻（秒）, 有声なら 1, 高さ（Hz） } を足す（音の処理のスレッドでは使わない）
+    void setFrameLog (std::vector<std::array<float, 3>>* log) { frameLog = log; }
+    // 開発用: 置いた印ごとに { 時刻（標本）, 周期（標本）, 有声なら 1, 相互相関の値（有声の始まりと無声は -2） } を足す
+    void setMarkLog (std::vector<std::array<double, 4>>* log) { markLog = log; }
+    // 開発用: 有声の断片ごとに { 出力の印の時刻, 使った元の印の時刻, 元の印の周期, 0 } を足す
+    void setGrainLog (std::vector<std::array<double, 4>>* log) { grainLog = log; }
+
     // 一律の倍率の範囲（これを超える分は補正で動かす）
     static constexpr float kMinRatio = 0.25f, kMaxRatio = 4.0f;
 
@@ -66,6 +83,10 @@ private:
 
     double fs = 48000.0;
     Settings settings;
+    Tuning tuning;
+    std::vector<std::array<float, 3>>* frameLog = nullptr;
+    std::vector<std::array<double, 4>>* markLog = nullptr;
+    std::vector<std::array<double, 4>>* grainLog = nullptr;
     bool configured = false;
 
     // 長さ（標本数）
@@ -88,12 +109,18 @@ private:
     PitchDetector detector;
     FormantTracker tracker;
     std::vector<Frame> frames;
-    int64_t frameCount = 0;     // 分析したフレームの数
+    int64_t frameCount = 0;     // 決まったフレームの数（ピッチ検出の先読みの分だけ、分析したフレームより少ない）
+    int64_t rawCount = 0;       // 分析した（窓をピッチ検出に渡した）フレームの数
     int64_t nextFrameAt = 0;    // 次のフレームを分析する入力の時刻
+    int lag = 0;                // ピッチ検出の先読みのフレームの数
+    static constexpr int kPendingRing = 64;
+    std::array<float, kPendingRing> pendingLevel {}; // 分析して、まだ決まっていないフレームの音量（dB）
     float levelPeak = -120.0f;
-    bool voicedState = false;   // ならした後の有声・無声
-    int voicingChange = 0;      // 判定が voicedState と違ったフレームが続いた数
-    float lastVoicedF0 = 0.0f;  // 最後に有声と判定したフレームの高さ
+    float rawPeak = -120.0f;    // 分析した時点での、最近の一番大きい音（dB。有声・無声の手がかり用）
+    Fft cueFft;
+    std::vector<Fft::Complex> cueBuf;
+    std::vector<float> cueWindow;
+    int cueSize = 0;            // FFT の大きさ（ピッチ検出の窓の長さ以上の 2 のべき乗）
 
     std::vector<Mark> marks;
     int64_t markCount = 0;
@@ -107,12 +134,17 @@ private:
     float theta = 0.0f;         // 有声の重み sin、無声の重み cos
 
     GrainMaker grain;
-    WarpMap warp;
-    // 最後に写像を作ったときの入力（同じなら作り直さない）
-    bool warpValid = false;
-    float warpFormant = 0.0f;
-    std::array<float, 4> warpDelta {}, warpAnchors {};
-    AboveF4 warpAbove = AboveF4::followF4;
+    // 写像（0 = 有声、1 = 無声。無声はフォルマントのつまみの代わりに無声フォルマントを使う）。
+    // 最後に作ったときの入力を持ち、同じなら作り直さない
+    struct WarpCache
+    {
+        WarpMap map;
+        bool valid = false;
+        float formant = 0.0f;
+        std::array<float, 4> delta {}, anchors {};
+        AboveF4 above = AboveF4::followF4;
+    };
+    std::array<WarpCache, 2> warps;
     std::vector<float> seg, grainOut, corr, mono;
 
     // 入力チャンネルの自動の選択
@@ -128,16 +160,20 @@ private:
     void selectInput (const float* const* in, int numIn, int n, float* mono);
     void pushInput (float v);
     void analyzeFrame();
+    void finalizeFrame (const PitchResult& pitch);
+    void voicingCue (int windowLength, float levelDb, float& up, float& down);
     void placeMarks();
     void synthesize (int64_t blockStart, int64_t blockEnd);
     void writeGrain (std::vector<float>& acc, double centreOut, int halfOut, int64_t from);
-    bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, bool correct, int lifter, int stream, bool powerWindow);
+    bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, const WarpMap* correction, int lifter, int stream, bool powerWindow);
     // t に一番近いフレーム。availInPos を渡すと、入力がその時刻まで届いた時点で分析済みのフレームに限る
     const Frame& frameAt (double t, int64_t availInPos = INT64_MAX) const;
     double frameCentre (int64_t j) const;      // j 番目のフレームの窓の中心の時刻
-    int64_t inPosWhenKnown (double t) const;   // 時刻 t のフレームが分析される入力の時刻
+    int64_t nearestFrame (double t) const;     // 時刻 t に一番近いフレームの番号（frameAt が使うもの）
+    int64_t inPosWhenKnown (double t) const;   // 時刻 t のフレームが決まる入力の時刻
     bool voicedThroughout (int64_t from, int64_t to, int64_t availInPos) const;
-    float ratioFor (const Frame& f);
+    float ratioFor (const Frame& f, int stream); // stream: 0 = 有声、1 = 無声
+    const WarpMap* correctionFor (int stream) const { return warps[static_cast<size_t> (stream)].map.isUniform() ? nullptr : &warps[static_cast<size_t> (stream)].map; }
 
     float x (int64_t t) const { return t < 0 ? 0.0f : xRing[static_cast<size_t> (t & xMask)]; }
 };

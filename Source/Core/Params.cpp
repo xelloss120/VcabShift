@@ -16,22 +16,27 @@ std::vector<ParamInfo> makeTable()
     std::vector<ParamInfo> t {
         { P::pitch, "pitch", "ピッチ", T::real, -24.0f, 24.0f, 12.0f, 0.1f, 0.0f, "半音", {},
           "声の高さを動かす量。+12 で 1 オクターブ上がります。" },
-        { P::formant, "formant", "フォルマント", T::real, -24.0f, 24.0f, 6.0f, 0.1f, 0.0f, "半音", {},
-          "声色（声道の響き）を動かす量。上げると小柄な声に、下げると大柄な声になります。" },
+        { P::formant, "formant", "有声フォルマント", T::real, -24.0f, 24.0f, 6.0f, 0.1f, 0.0f, "半音", {},
+          "有声音（母音など、声帯が震える音）の声色（声道の響き）を動かす量。上げると小柄な声に、下げると大柄な声になります。\n"
+          "無声音（さ行・は行などの息の音）には使わず、「無声フォルマント」を使います。" },
+        { P::unvoicedFormant, "unvoiced_formant", "無声フォルマント", T::real, -24.0f, 24.0f, 3.0f, 0.1f, 0.0f, "半音", {},
+          "無声音（さ行・は行などの息の音）の声色を動かす量。有声フォルマントと別に決められます。\n"
+          "F1〜F4 の位置は有声音と同じで、差（グラフの緑のひし形）と F4 より上の扱い（無声F4以降）は、無声音で別に決められます。\n"
+          "上げすぎると、さ行がチリチリ、シャリシャリと鋭くなります。" },
         { P::warpMode, "warp_mode", "動かし方", T::choice, 0.0f, 2.0f, 1.0f, 1.0f, 0.0f, "",
           { "一律", "フォルマント追従", "帯域固定" },
           "周波数ごとに、声色をどれだけ動かすか。\n"
-          "一律: どの周波数も、フォルマントのつまみの分だけ動かします（F1〜F4 の点と F4以降は使いません）。\n"
+          "一律: どの周波数も、有声フォルマントのつまみの分だけ動かします（F1〜F4 の点、有声F4以降、無声F4以降は使いません）。\n"
           "フォルマント追従: 声から追いかけた F1〜F4 の位置ごとに、別の量だけ動かします。点は声に合わせて左右に動き、上下だけ操作できます。\n"
           "帯域固定: 決まった位置ごとに、別の量だけ動かします。点は上下左右にドラッグして動かせます。" },
         { P::f1Delta, "f1_delta", "F1 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
-          "F1 を、フォルマントのつまみからさらに動かす量。" },
+          "F1 を、有声フォルマントのつまみからさらに動かす量。" },
         { P::f2Delta, "f2_delta", "F2 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
-          "F2 を、フォルマントのつまみからさらに動かす量。" },
+          "F2 を、有声フォルマントのつまみからさらに動かす量。" },
         { P::f3Delta, "f3_delta", "F3 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
-          "F3 を、フォルマントのつまみからさらに動かす量。" },
+          "F3 を、有声フォルマントのつまみからさらに動かす量。" },
         { P::f4Delta, "f4_delta", "F4 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
-          "F4 を、フォルマントのつまみからさらに動かす量。" },
+          "F4 を、有声フォルマントのつまみからさらに動かす量。" },
         { P::f1Freq, "f1_freq", "F1 の位置", T::real, kFormantRanges[0].lo, kFormantRanges[0].hi, 500.0f, 1.0f, 0.0f, "Hz", {},
           "動かし方が「帯域固定」のときの F1 の位置。「フォルマント追従」でも、声から追いかけられないと、この位置に戻ります。" },
         { P::f2Freq, "f2_freq", "F2 の位置", T::real, kFormantRanges[1].lo, kFormantRanges[1].hi, 1400.0f, 1.0f, 0.0f, "Hz", {},
@@ -40,11 +45,25 @@ std::vector<ParamInfo> makeTable()
           "動かし方が「帯域固定」のときの F3 の位置。「フォルマント追従」でも、声から追いかけられないと、この位置に戻ります。" },
         { P::f4Freq, "f4_freq", "F4 の位置", T::real, kFormantRanges[3].lo, kFormantRanges[3].hi, 3500.0f, 1.0f, 0.0f, "Hz", {},
           "動かし方が「帯域固定」のときの F4 の位置。「フォルマント追従」でも、声から追いかけられないと、この位置に戻ります。" },
-        { P::aboveF4, "above_f4", "F4以降", T::choice, 0.0f, 2.0f, 1.0f, 1.0f, 0.0f, "",
+        { P::aboveF4, "above_f4", "有声F4以降", T::choice, 0.0f, 2.0f, 0.0f, 1.0f, 0.0f, "",
           { "F4合わせ", "設定合わせ", "地声合わせ" },
           "F4 より上の周波数を、どれだけ動かすか。\n"
           "F4合わせ: F4 と同じだけ。\n"
-          "設定合わせ: フォルマントのつまみの分だけ。\n"
+          "設定合わせ: 有声フォルマントのつまみの分だけ。\n"
+          "地声合わせ: 動かさない。" },
+        { P::uf1Delta, "uf1_delta", "無声 F1 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
+          "無声音の F1 を、無声フォルマントのつまみからさらに動かす量（位置は有声音と同じ）。" },
+        { P::uf2Delta, "uf2_delta", "無声 F2 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
+          "無声音の F2 を、無声フォルマントのつまみからさらに動かす量（位置は有声音と同じ）。" },
+        { P::uf3Delta, "uf3_delta", "無声 F3 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
+          "無声音の F3 を、無声フォルマントのつまみからさらに動かす量（位置は有声音と同じ）。" },
+        { P::uf4Delta, "uf4_delta", "無声 F4 の差", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "半音", {},
+          "無声音の F4 を、無声フォルマントのつまみからさらに動かす量（位置は有声音と同じ）。" },
+        { P::unvoicedAboveF4, "unvoiced_above_f4", "無声F4以降", T::choice, 0.0f, 2.0f, 0.0f, 1.0f, 0.0f, "",
+          { "F4合わせ", "設定合わせ", "地声合わせ" },
+          "無声音で、F4 より上の周波数をどれだけ動かすか。さ行・は行の主な成分（4〜8kHz）は、ほとんど F4 より上にあります。\n"
+          "F4合わせ: 無声の F4 と同じだけ。\n"
+          "設定合わせ: 無声フォルマントのつまみの分だけ。\n"
           "地声合わせ: 動かさない。" },
         { P::pitchMin, "pitch_min", "探索下限", T::real, 40.0f, 200.0f, 80.0f, 1.0f, 0.0f, "Hz", {},
           "声の高さを探す範囲の下限。遅延はこの値で決まります（周期の 2 倍。80Hz で 25ms）。声の低さに合わせて、なるべく高くすると遅延が減ります。" },
@@ -91,15 +110,20 @@ Settings Settings::fromValues (const std::array<float, kNumParams>& v)
     Settings s;
     s.pitch = get (P::pitch);
     s.formant = get (P::formant);
+    s.unvoicedFormant = get (P::unvoicedFormant);
     s.warpMode = static_cast<WarpMode> (std::clamp (getInt (P::warpMode), 0, 2));
     s.delta = { get (P::f1Delta), get (P::f2Delta), get (P::f3Delta), get (P::f4Delta) };
     s.anchor = { get (P::f1Freq), get (P::f2Freq), get (P::f3Freq), get (P::f4Freq) };
     s.aboveF4 = static_cast<AboveF4> (std::clamp (getInt (P::aboveF4), 0, 2));
+    s.unvoicedDelta = { get (P::uf1Delta), get (P::uf2Delta), get (P::uf3Delta), get (P::uf4Delta) };
+    s.unvoicedAboveF4 = static_cast<AboveF4> (std::clamp (getInt (P::unvoicedAboveF4), 0, 2));
     if (s.warpMode == WarpMode::uniform)
     {
         // 一律: F1〜F4 の差と F4以降は使わない（どの周波数もつまみの分だけ）
         s.delta = { 0.0f, 0.0f, 0.0f, 0.0f };
         s.aboveF4 = AboveF4::followUniform;
+        s.unvoicedDelta = { 0.0f, 0.0f, 0.0f, 0.0f };
+        s.unvoicedAboveF4 = AboveF4::followUniform;
     }
     s.pitchMin = get (P::pitchMin);
     // 上限が下限の 1.5 倍より狭いときは、下限の 1.5 倍として扱う（つまみの値は書き換えない）

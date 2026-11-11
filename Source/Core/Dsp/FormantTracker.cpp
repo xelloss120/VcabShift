@@ -13,7 +13,7 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kPreEmphasis = 0.97;
+constexpr double kPreEmphasis = kLpcPreEmphasis;
 constexpr double kMaxBandwidth = 700.0;  // Hz。これより広い根は山とみなさない
 constexpr double kHoldSeconds = 0.150;
 constexpr double kGlideSeconds = 0.050;
@@ -155,6 +155,9 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
 
     if (usable && computeLpc (x))
     {
+        for (int k = 0; k <= FormantFrame::kLpcOrder; ++k)
+            out.lpc[static_cast<size_t> (k)] = static_cast<float> (lpc[static_cast<size_t> (k)]);
+        out.lpcValid = true;
         findRoots();
         if (rootsValid)
         {

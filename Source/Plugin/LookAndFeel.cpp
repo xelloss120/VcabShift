@@ -25,19 +25,33 @@ VCLookAndFeel::VCLookAndFeel()
                        0xffffffff }); // メニューの文字
 }
 
-juce::TextLayout VCLookAndFeel::tooltipLayout (const juce::String& text, juce::Colour colour) const
+juce::TextLayout VCLookAndFeel::tooltipLayout (const juce::String& text, juce::Colour colour, float width) const
 {
     juce::AttributedString s;
     s.setJustification (juce::Justification::topLeft);
     s.append (text, juce::FontOptions (kMinFontSize), colour);
     juce::TextLayout tl;
-    tl.createLayout (s, kTooltipWidth);
+    tl.createLayout (s, width);
     return tl;
 }
 
 juce::Rectangle<int> VCLookAndFeel::getTooltipBounds (const juce::String& text, juce::Point<int> screenPos, juce::Rectangle<int> parentArea)
 {
-    const auto tl = tooltipLayout (text, juce::Colours::black);
+    if (tooltipAvoid != nullptr && tooltipAvoid->isVisible())
+    {
+        // 座標は、親があれば親の中、なければ画面の上（TooltipWindow と同じ）
+        const auto area = tooltipParent != nullptr ? tooltipParent->getLocalArea (tooltipAvoid, tooltipAvoid->getLocalBounds())
+                                                   : tooltipAvoid->getScreenBounds();
+        if (area.contains (screenPos))
+        {
+            const auto wide = tooltipLayout (text, juce::Colours::black, static_cast<float> (parentArea.getWidth() - 40));
+            const int w = static_cast<int> (wide.getWidth() + 22.0f);
+            const int h = static_cast<int> (wide.getHeight() + 16.0f);
+            const int y = std::max (parentArea.getY(), area.getY() - h - 4);
+            return juce::Rectangle<int> (parentArea.getCentreX() - w / 2, y, w, h).constrainedWithin (parentArea); // 左右は窓の真ん中
+        }
+    }
+    const auto tl = tooltipLayout (text, juce::Colours::black, kTooltipWidth);
     const int w = static_cast<int> (tl.getWidth() + 22.0f);
     const int h = static_cast<int> (tl.getHeight() + 16.0f);
     return juce::Rectangle<int> (screenPos.x > parentArea.getCentreX() ? screenPos.x - (w + 12) : screenPos.x + 24,
@@ -53,7 +67,8 @@ void VCLookAndFeel::drawTooltip (juce::Graphics& g, const juce::String& text, in
     g.fillRect (bounds);
     g.setColour (juce::Colours::white.withAlpha (0.25f));
     g.drawRect (bounds, 1.0f);
-    tooltipLayout (text, juce::Colour (0xfff0f0f0)).draw (g, bounds.reduced (10.0f, 7.0f));
+    // 折り返しの幅は、getTooltipBounds で決めた幅に合わせる（ほかの余白は 22 画素）
+    tooltipLayout (text, juce::Colour (0xfff0f0f0), static_cast<float> (width - 22) + 1.0f).draw (g, bounds.reduced (10.0f, 7.0f));
 }
 
 juce::Font VCLookAndFeel::getLabelFont (juce::Label& l) { return notSmaller (LookAndFeel_V4::getLabelFont (l)); }

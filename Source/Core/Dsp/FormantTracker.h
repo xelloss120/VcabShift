@@ -13,7 +13,14 @@ struct FormantFrame
 {
     std::array<float, 4> f { 500.0f, 1400.0f, 2700.0f, 3500.0f }; // Hz
     std::array<bool, 4> tracked { false, false, false, false };   // このフレームで追いかけられたか（画面の塗りつぶし）
+
+    // このフレームの LPC（高域強調 0.97 をかけた音の、A(z) = 1 + a1 z^-1 + …）。有声の最初の印を探すのに使う
+    static constexpr int kLpcOrder = 18;
+    std::array<float, kLpcOrder + 1> lpc {};
+    bool lpcValid = false;
 };
+
+constexpr double kLpcPreEmphasis = 0.97;
 
 class FormantTracker
 {

@@ -24,13 +24,14 @@ BANDWIDTHS = (90, 110, 160, 250)
 SEG = 0.7  # 1 母音の長さ（0.6 秒の声と 0.1 秒の無音）
 
 CASES = {
-    'through_yin': 'pitch=0 formant=0',
+    'through_yin': 'pitch=0 formant=0 unvoiced_formant=0',
     'default': '',
+    'default_uv6': 'unvoiced_formant=6',
     'bands': 'warp_mode=2 f1_delta=-3 f2_delta=4 f4_delta=2 above_f4=2',
     'formants': 'f2_delta=4',
     'formants_above_uniform': 'f1_delta=-2 f3_delta=3 above_f4=1',
-    'formant_down': 'pitch=-12 formant=-12',
-    'extreme_up': 'pitch=24 formant=24',
+    'formant_down': 'pitch=-12 formant=-12 unvoiced_formant=-12',
+    'extreme_up': 'pitch=24 formant=24 unvoiced_formant=12',
     'fmin200': 'pitch_min=200 pitch_max=150',
     'fmin40': 'pitch_min=40 pitch_max=1000',
 }
@@ -143,8 +144,8 @@ def evaluate():
             errs.append(np.sqrt(np.mean(d ** 2)))
         print(f'{name:10s} 狙いの包絡との差 dB:', ' '.join(f'{v} {e:.1f}' for v, e in zip(VOWELS, errs)), f' 平均 {np.mean(errs):.1f}')
 
-    render(inp, os.path.join(WORK, 'uniform4_eval.wav'), 'pitch=0 formant=4')
-    render(inp, os.path.join(WORK, 'formants4_eval.wav'), 'pitch=0 formant=0 f2_delta=4')
+    render(inp, os.path.join(WORK, 'uniform4_eval.wav'), 'pitch=0 formant=4 unvoiced_formant=4')
+    render(inp, os.path.join(WORK, 'formants4_eval.wav'), 'pitch=0 formant=0 unvoiced_formant=0 f2_delta=4')
     warp_error('uniform4', lambda v: [(0.0, 4.0)])
 
     def formant_pts(v):
