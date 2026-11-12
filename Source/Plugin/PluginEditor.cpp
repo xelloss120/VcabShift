@@ -12,6 +12,16 @@ constexpr int kInputComboWidth = 176; // VcabDenoise の入力チャンネルの
 constexpr int kComboExtra = 46;       // 選択欄の、文字の幅に足す分（左右の余白と、右の矢印）
 constexpr int kLabelInset = 5;        // Label の文字の左の余白（JUCE の標準）
 constexpr int kLabelGap = 12;         // 名前と部品の隙間
+constexpr int kTimerHz = 30;          // 画面の更新（「声に合わせる」は、この回数ごとに声の高さを 1 つ集める）
+
+// 「声に合わせる」
+constexpr double kFitSettleMs = 300.0;     // 探索下限を下げた直後は、処理の作り直しを待って集めない
+constexpr double kFitTimeoutMs = 15000.0;  // この時間で声が足りなければやめる
+constexpr double kFitMessageMs = 3000.0;   // 結果をボタンに出しておく時間
+constexpr int kFitNeeded = 3 * kTimerHz;   // 有声の値を 3 秒分集めたら終わる
+constexpr int kFitMinimum = 1 * kTimerHz;  // 時間切れのとき、これだけあれば使う
+constexpr float kFitLowPct = 0.05f;        // 測った声の低い側（5% 点）から
+constexpr float kFitMargin = 5.0f;         // この半音だけ下を探索下限にする
 
 // 画面に出すパラメータ（F1〜F4 の差と位置は、グラフの点で操作する）
 const vcab::P kRows[] = { vcab::P::pitch, vcab::P::formant, vcab::P::unvoicedFormant, vcab::P::warpMode, vcab::P::aboveF4, vcab::P::unvoicedAboveF4,
@@ -90,6 +100,8 @@ VcabShiftEditor::VcabShiftEditor (VcabShiftProcessor& p)
         {
             if (safe == nullptr || result != 1)
                 return;
+            if (safe->measuring)
+                safe->finishMeasure (false);
             for (const auto& info : vcab::paramTable())
             {
                 if (info.id == vcab::P::inputChannel)
@@ -113,17 +125,102 @@ VcabShiftEditor::VcabShiftEditor (VcabShiftProcessor& p)
     };
     if (proc.openAudioSettings)
         addAndMakeVisible (audioSettingsButton);
+    fitButton.setButtonText (utf8 ("声に合わせる"));
+    fitButton.setTooltip (utf8 ("押してから数秒、ふだんの声でしゃべると、探索下限をその声の低さに合わせます"
+                                "（測った声の低い側から 5 半音下）。声が高い人ほど下限が上がり、遅延が減ります。探索上限は変えません。\n"
+                                "測っている間は探索下限を 40Hz に下げるので、押したときと終わったときに音が一瞬途切れ、遅延も一時的に増えます。\n"
+                                "測っている間にもう一度押すと、取りやめて元の値に戻します。"));
+    fitButton.onClick = [this]
+    {
+        if (measuring)
+            finishMeasure (false);
+        else
+            startMeasure();
+    };
+    addAndMakeVisible (fitButton);
     addAndMakeVisible (spectrum);
 
     setSize (kWidth, kHeight);
     timerCallback();
-    startTimerHz (10);
+    startTimerHz (kTimerHz);
 }
 
 VcabShiftEditor::~VcabShiftEditor()
 {
     stopTimer();
+    if (measuring)
+        finishMeasure (false); // 画面を閉じたら、測る前の範囲に戻す
     setLookAndFeel (nullptr);
+}
+
+void VcabShiftEditor::setParamValue (vcab::P id, float v)
+{
+    auto* p = proc.param (id);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost (p->convertTo0to1 (v));
+    p->endChangeGesture();
+}
+
+void VcabShiftEditor::startMeasure()
+{
+    savedMin = proc.value (vcab::P::pitchMin);
+    setParamValue (vcab::P::pitchMin, vcab::paramInfo (vcab::P::pitchMin).minValue);
+    f0Samples.clear();
+    measuring = true;
+    measureStart = juce::Time::getMillisecondCounterHiRes();
+    messageUntil = 0.0;
+}
+
+void VcabShiftEditor::finishMeasure (bool apply)
+{
+    measuring = false;
+    const int n = static_cast<int> (f0Samples.size());
+    if (apply && n >= kFitMinimum)
+    {
+        std::sort (f0Samples.begin(), f0Samples.end());
+        auto at = [&] (float q) { return f0Samples[static_cast<size_t> (juce::jlimit (0, n - 1, juce::roundToInt (q * static_cast<float> (n - 1))))]; };
+        const auto& minInfo = vcab::paramInfo (vcab::P::pitchMin);
+        const float lo = juce::jlimit (minInfo.minValue, minInfo.maxValue, std::round (at (kFitLowPct) * std::exp2 (-kFitMargin / 12.0f)));
+        setParamValue (vcab::P::pitchMin, lo);
+        fitButton.setButtonText (utf8 ("探索下限を ") + juce::String (juce::roundToInt (lo)) + utf8 (" Hz にしました"));
+    }
+    else
+    {
+        setParamValue (vcab::P::pitchMin, savedMin);
+        fitButton.setButtonText (apply ? utf8 ("声を拾えませんでした") : utf8 ("取りやめました"));
+    }
+    messageUntil = juce::Time::getMillisecondCounterHiRes() + kFitMessageMs;
+}
+
+void VcabShiftEditor::updateMeasure()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (! measuring)
+    {
+        // 結果の文字を出し終えたら、ボタンの名前に戻す
+        if (messageUntil > 0.0 && now >= messageUntil)
+        {
+            messageUntil = 0.0;
+            fitButton.setButtonText (utf8 ("声に合わせる"));
+        }
+        return;
+    }
+
+    // 音の処理が進んでいるとき（フレームが増えたとき）だけ集める（止まっていると、最後の値が残るため）
+    const double elapsed = now - measureStart;
+    const auto& st = proc.status();
+    const int64_t frames = st.voicingCount.load();
+    const float f0 = st.f0.load();
+    if (elapsed >= kFitSettleMs && frames != lastFrameCount && f0 > 0.0f)
+        f0Samples.push_back (f0);
+    lastFrameCount = frames;
+
+    const int n = static_cast<int> (f0Samples.size());
+    if (n >= kFitNeeded || elapsed >= kFitTimeoutMs)
+        finishMeasure (true);
+    else
+        fitButton.setButtonText (utf8 ("しゃべってください ") + juce::String (static_cast<float> (n) / kTimerHz, 1)
+                                 + " / " + juce::String (kFitNeeded / kTimerHz) + utf8 (" 秒"));
 }
 
 VcabShiftEditor::Row* VcabShiftEditor::row (vcab::P id)
@@ -176,7 +273,7 @@ void VcabShiftEditor::resized()
         input->label.setBounds (h.removeFromRight (labelWidth ({ vcab::P::inputChannel })));
     }
 
-    // 操作の帯（3 行 3 列）: ピッチ・有声フォルマント・無声フォルマント ｜ 探索下限・探索上限 ｜ 動かし方・有声F4以降・無声F4以降
+    // 操作の帯（3 行 3 列）: 声に合わせる・探索下限・探索上限 ｜ ピッチ・有声フォルマント・無声フォルマント ｜ 動かし方・有声F4以降・無声F4以降
     // 右の列の選択欄は、中の文字が切れない幅（2 つのうち広いほう）にそろえ、残りを左の 2 列で分ける（バーの長さは同じ）
     stripArea = r.removeFromTop (kStripRow * 3 + 14);
     {
@@ -188,8 +285,8 @@ void VcabShiftEditor::resized()
                 w = std::max (w, textWidth (utf8 (c)));
             return w + kComboExtra;
         };
-        const int label1 = labelWidth ({ vcab::P::pitch, vcab::P::formant, vcab::P::unvoicedFormant });
-        const int label2 = labelWidth ({ vcab::P::pitchMin, vcab::P::pitchMax });
+        const int label1 = labelWidth ({ vcab::P::pitchMin, vcab::P::pitchMax });
+        const int label2 = labelWidth ({ vcab::P::pitch, vcab::P::formant, vcab::P::unvoicedFormant });
         const int label3 = labelWidth ({ vcab::P::warpMode, vcab::P::aboveF4, vcab::P::unvoicedAboveF4 });
         const int combo3 = std::max ({ comboWidth (vcab::P::warpMode), comboWidth (vcab::P::aboveF4), comboWidth (vcab::P::unvoicedAboveF4) });
         const int gap = 18;
@@ -211,11 +308,12 @@ void VcabShiftEditor::resized()
             else
                 rw->combo->setBounds (line);
         };
-        place (vcab::P::pitch, col1.removeFromTop (kStripRow), label1, bar);
-        place (vcab::P::formant, col1.removeFromTop (kStripRow), label1, bar);
-        place (vcab::P::unvoicedFormant, col1.removeFromTop (kStripRow), label1, bar);
-        place (vcab::P::pitchMin, col2.removeFromTop (kStripRow), label2, bar);
-        place (vcab::P::pitchMax, col2.removeFromTop (kStripRow), label2, bar);
+        fitButton.setBounds (col1.removeFromTop (kStripRow).reduced (0, 3));
+        place (vcab::P::pitchMin, col1.removeFromTop (kStripRow), label1, bar);
+        place (vcab::P::pitchMax, col1.removeFromTop (kStripRow), label1, bar);
+        place (vcab::P::pitch, col2.removeFromTop (kStripRow), label2, bar);
+        place (vcab::P::formant, col2.removeFromTop (kStripRow), label2, bar);
+        place (vcab::P::unvoicedFormant, col2.removeFromTop (kStripRow), label2, bar);
         place (vcab::P::warpMode, col3.removeFromTop (kStripRow), label3, combo3);
         place (vcab::P::aboveF4, col3.removeFromTop (kStripRow), label3, combo3);
         place (vcab::P::unvoicedAboveF4, col3.removeFromTop (kStripRow), label3, combo3);
@@ -228,6 +326,8 @@ void VcabShiftEditor::resized()
 
 void VcabShiftEditor::timerCallback()
 {
+    updateMeasure();
+
     // 一律のときは有声F4以降と無声F4以降を使わないので、灰色にする
     for (auto id : { vcab::P::aboveF4, vcab::P::unvoicedAboveF4 })
         if (auto* r = row (id))

@@ -41,6 +41,7 @@ SpectrumView::SpectrumView (VcabShiftProcessor& p) : proc (p)
                       "F1〜F4 の丸を上下にドラッグ（左右は声に合わせて動きます）。動かし方が「帯域固定」のときは、上下左右にドラッグ。\n"
                       "ひし形は上下だけ（位置は丸と同じで、重ならないよう少し右に描いています）。\n"
                       "ホイールで 0.5 半音ずつ。ダブルクリックで 0 に戻します。\n"
+                      "薄い青の範囲: 声の高さを探す範囲（探索下限〜上限）。\n"
                       "下端の帯: 直近 3 秒の有声（青）と無声（灰）。右端が今で、左へ流れます（周波数の目盛りとは関係ありません）。"));
     updateWarp();
     startTimerHz (30);
@@ -255,6 +256,16 @@ void SpectrumView::paint (juce::Graphics& g)
 
     g.saveState();
     g.reduceClipRegion (a.toNearestInt());
+
+    // 声の高さを探す範囲（探索下限〜上限。上限は下限の 1.5 倍より狭くしない、処理と同じ値）を薄く塗る
+    {
+        const float x0 = xForHz (settings.pitchMin), x1 = xForHz (settings.pitchMax);
+        g.setColour (kInputColour.withAlpha (0.08f));
+        g.fillRect (juce::Rectangle<float> (x0, a.getY(), x1 - x0, a.getHeight()));
+        g.setColour (kInputColour.withAlpha (0.3f));
+        g.drawVerticalLine (juce::roundToInt (x0), a.getY(), a.getBottom());
+        g.drawVerticalLine (juce::roundToInt (x1), a.getY(), a.getBottom());
+    }
 
     // スペクトル
     const double fs = proc.sampleRate() > 0.0 ? proc.sampleRate() : 48000.0;

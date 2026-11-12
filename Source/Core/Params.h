@@ -74,7 +74,7 @@ struct Settings
     std::array<float, 4> anchor { 500.0f, 1400.0f, 2700.0f, 3500.0f }; // Hz
     AboveF4 aboveF4 = AboveF4::followUniform;
     float pitchMin = 80.0f; // Hz
-    float pitchMax = 400.0f;
+    float pitchMax = 600.0f;
     InputChannel inputChannel = InputChannel::automatic;
 
     static Settings fromValues (const std::array<float, kNumParams>& v);
