@@ -28,7 +28,7 @@ static int run (int argc, char** argv)
     auto values = vcab::defaultValues();
     bool align = false;
     int block = 256;
-    std::string trackPath, framesPath, marksPath, grainsPath;
+    std::string trackPath, framesPath, marksPath, grainsPath, streamsPath, backfillPath;
     vcab::Engine::Tuning tuning;
     for (int i = 3; i < argc; ++i)
     {
@@ -51,6 +51,16 @@ static int run (int argc, char** argv)
         if (a == "--grains" && i + 1 < argc)
         {
             grainsPath = argv[++i];
+            continue;
+        }
+        if (a == "--backfill" && i + 1 < argc)
+        {
+            backfillPath = argv[++i];
+            continue;
+        }
+        if (a == "--streams" && i + 1 < argc)
+        {
+            streamsPath = argv[++i];
             continue;
         }
         if (a == "--marks" && i + 1 < argc)
@@ -124,6 +134,14 @@ static int run (int argc, char** argv)
     if (! grainsPath.empty())
         grainLog.reserve (static_cast<size_t> (len / 20) + 16);
     engine.setGrainLog (grainsPath.empty() ? nullptr : &grainLog);
+    std::vector<std::array<float, 3>> streamLog;
+    if (! streamsPath.empty())
+        streamLog.reserve (static_cast<size_t> (len) + 65536);
+    engine.setStreamLog (streamsPath.empty() ? nullptr : &streamLog);
+    std::vector<std::array<double, 3>> backfillLog;
+    if (! backfillPath.empty())
+        backfillLog.reserve (65536);
+    engine.setBackfillLog (backfillPath.empty() ? nullptr : &backfillLog);
     engine.prepare (fs, kBlock);
     engine.setSettings (vcab::Settings::fromValues (values));
     const int latency = engine.latencySamples();
@@ -201,6 +219,34 @@ static int run (int argc, char** argv)
     const float* p = out.data() + (align ? latency : 0);
     const int outLen = align ? len : total;
     writer->writeFromFloatArrays (&p, 1, outLen);
+
+    if (! backfillPath.empty())
+    {
+        std::ofstream bl (backfillPath);
+        bl << "onset,out,placed" << std::endl;
+        for (const auto& r : backfillLog)
+            bl << static_cast<int64_t> (r[0]) << "," << r[1] << "," << r[2] << std::endl;
+    }
+
+    if (! streamsPath.empty())
+    {
+        // 3 チャンネル、32 ビット浮動小数（有声の流れ、無声の流れ、つなぎの角度）。時刻は出力（遅延を詰めない）
+        const juce::File sf { juce::String (juce::CharPointer_UTF8 (streamsPath.c_str())) };
+        sf.deleteFile();
+        std::unique_ptr<juce::OutputStream> ss = sf.createOutputStream();
+        const auto so = juce::AudioFormatWriterOptions {}.withSampleRate (fs).withNumChannels (3).withBitsPerSample (32)
+                            .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+        std::unique_ptr<juce::AudioFormatWriter> sw (wav.createWriterFor (ss, so));
+        std::vector<float> ch[3];
+        for (auto& c : ch)
+            c.reserve (streamLog.size());
+        for (const auto& r : streamLog)
+            for (int k = 0; k < 3; ++k)
+                ch[k].push_back (r[static_cast<size_t> (k)]);
+        const float* cp[3] = { ch[0].data(), ch[1].data(), ch[2].data() };
+        if (sw != nullptr)
+            sw->writeFromFloatArrays (cp, 3, static_cast<int> (streamLog.size()));
+    }
 
     if (! framesPath.empty())
     {

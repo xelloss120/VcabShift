@@ -31,7 +31,7 @@ void FormantTracker::prepare (float sampleRate, float hopSeconds)
     fs = sampleRate;
     hop = hopSeconds;
     window = static_cast<int> (std::lround (0.025 * fs));
-    order = std::clamp (static_cast<int> (std::lround (fs / 1000.0)) + 2, 12, 24);
+    order = std::clamp (static_cast<int> (std::lround (fs / 1000.0)) + 2, 12, FormantFrame::kMaxLpcOrder);
 
     hamming.resize (static_cast<size_t> (window));
     for (int i = 0; i < window; ++i)
@@ -155,8 +155,9 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
 
     if (usable && computeLpc (x))
     {
-        for (int k = 0; k <= FormantFrame::kLpcOrder; ++k)
+        for (int k = 0; k <= order; ++k)
             out.lpc[static_cast<size_t> (k)] = static_cast<float> (lpc[static_cast<size_t> (k)]);
+        out.lpcOrder = order;
         out.lpcValid = true;
         findRoots();
         if (rootsValid)

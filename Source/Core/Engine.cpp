@@ -150,6 +150,7 @@ void Engine::configure()
     nextVoiced = 0.0;
     nextUnvoiced = static_cast<double> (outPos);
     theta = 0.0f;
+    voicedRun = false;
     for (auto& w : warps)
         w.valid = false;
     grain.forgetEnvelope();
@@ -461,7 +462,7 @@ void Engine::placeMarks()
             int64_t readyAt = tn + len + 1;
             const int64_t d0 = static_cast<int64_t> (std::ceil ((static_cast<double> (tn) + lpDelay + 1.0) / decim - 1.0));
             const int64_t d1 = static_cast<int64_t> (std::floor ((static_cast<double> (tn + len - 1) + lpDelay + 1.0) / decim - 1.0));
-            constexpr int order = FormantFrame::kLpcOrder;
+            const int order = f.fm.lpcOrder;
             if (f.fm.lpcValid && d1 >= d0 && d0 - order - 1 >= 0 && d0 - order - 1 > dCount - static_cast<int64_t> (dRing.size()))
             {
                 if (d1 >= dCount)
@@ -574,17 +575,82 @@ void Engine::writeGrain (std::vector<float>& acc, double centreOut, int halfOut,
     }
 }
 
+bool Engine::startVoicedRun (int64_t o, double p)
+{
+    // 声の出だし: 有声と無声のつなぎは、フレームが有声になった時刻から始まるが、前は最初の有声の断片を出力の直前に、
+    // 先へ進んでいた出力の印の時刻に置いていたので、つなぎの間に有声の流れが空になっていた（録音した声で、つなぎの始まりから
+    // 最初の断片の中心まで中央値 9ms。出力が入力より 3dB 以上へこむ出だしが 16 中 5）。
+    // そこで、最初の有声の印が決まったらすぐ、その印の時刻に最初の断片を置き、同じ断片を出力の印の間隔で前へ繰り返して、
+    // つなぎの始まりまで有声の流れを埋める。
+    int64_t i = std::max (markCursor, markCount - kMarkRing + 1);
+    while (i < markCount && ! marks[static_cast<size_t> (i % kMarkRing)].voiced)
+        ++i;
+    if (i >= markCount)
+        return false;
+    const Mark m = marks[static_cast<size_t> (i % kMarkRing)];
+    if (inPos < m.ready)
+        return false;
+    // 使うフレームは、印が決まる時点で決まっているものに限る（ブロックの大きさによらないように）
+    const float ratio = ratioFor (frameAt (static_cast<double> (m.t), m.ready), 0);
+    const int halfOut = std::max (2, static_cast<int> (std::lround (ratio >= 1.0f ? m.period / ratio : m.period)));
+    const float halfIn = static_cast<float> (halfOut) * ratio;
+    // 断片の元の音が全部届き、印も決まっている入力の時刻。この時刻に初めて届いたブロックで作るので、
+    // 「この時刻 − 遅延」より後の出力はまだ出していない（どのブロックの大きさでも）
+    const int64_t when = std::max (m.ready, m.t + static_cast<int64_t> (std::ceil (halfIn)) + 1);
+    if (inPos < when)
+        return false;
+    const int64_t earliest = when - latency;
+    const double first = std::max (static_cast<double> (m.t), static_cast<double> (earliest + halfOut));
+    const int lifter = std::min (static_cast<int> (std::lround (m.period * 0.5f)), lifterMax);
+    if (! makeGrain (m.t, halfIn, halfOut, ratio, correctionFor (0), lifter, 0, false))
+        return false;
+    writeGrain (accVoiced, first, halfOut, std::max (o, earliest));
+    if (grainLog != nullptr)
+        grainLog->push_back ({ first, static_cast<double> (m.t), m.period, 0.0 });
+
+    // つなぎの始まり: 最初の断片から前へ、フレームが有声のあいだ（半フレームごとに見る）
+    int64_t onset = static_cast<int64_t> (std::floor (first));
+    const int64_t limit = onset - 2 * (tMax + fadeSamples);
+    const int64_t look = std::max (1, hop / 2);
+    while (onset - look >= limit && frameAt (static_cast<double> (onset - look), m.ready).voiced)
+        onset -= look;
+    const double step = m.period / p;
+    for (int k = 1; k < 64; ++k)
+    {
+        const double c = first - k * step;
+        if (c + step <= static_cast<double> (onset))
+            break;
+        const int64_t start = static_cast<int64_t> (std::llround (c)) - halfOut;
+        if (start < earliest || start < o)
+        {
+            if (backfillLog != nullptr)
+                backfillLog->push_back ({ static_cast<double> (onset), c, start < earliest ? -2.0 : -1.0 });
+            break;
+        }
+        writeGrain (accVoiced, c, halfOut, o);
+        if (backfillLog != nullptr)
+            backfillLog->push_back ({ static_cast<double> (onset), c, 1.0 });
+    }
+    markCursor = i;
+    nextVoiced = first + step;
+    voicedRun = true;
+    return true;
+}
+
 void Engine::synthesize (int64_t o, int64_t e)
 {
     const double p = std::exp2 (settings.pitch / 12.0);
 
     // 有声の流れ: 出力の印 nextVoiced に、その時刻より前の一番新しい元の印の断片を置く。
     // 使う印とフレームは、入力が「nextVoiced − 探索下限の周期 ＋ 遅延」まで届いた時点で決まっていたものに限る
-    // （断片を作るのはそれより後なので、どのブロックの大きさでも同じものを使える）
+    // （断片を作るのはそれより後なので、どのブロックの大きさでも同じものを使える）。
+    // 声の出だし（無声の後の最初の有声の印）だけは startVoicedRun で置く
     if (nextVoiced < static_cast<double> (o))
         nextVoiced = static_cast<double> (o);
     for (int guard = 0; guard < 8192 && markCount > 0; ++guard)
     {
+        if (! voicedRun && startVoicedRun (o, p))
+            continue;
         const int64_t avail = static_cast<int64_t> (std::floor (nextVoiced)) - tMax + latency;
         markCursor = std::max (markCursor, markCount - kMarkRing + 1);
         while (markCursor + 1 < markCount)
@@ -592,15 +658,19 @@ void Engine::synthesize (int64_t o, int64_t e)
             const Mark& next = marks[static_cast<size_t> ((markCursor + 1) % kMarkRing)];
             if (static_cast<double> (next.t) > nextVoiced || next.ready > avail)
                 break;
+            // 無声の後の最初の有声の印へは進まない（startVoicedRun が置く）
+            if (! voicedRun && next.voiced)
+                break;
             ++markCursor;
         }
         const Mark m = marks[static_cast<size_t> (markCursor % kMarkRing)];
-        if (! m.voiced)
+        if (! m.voiced || ! voicedRun)
         {
             // 次に有声の断片が来ても、その書き始め（nextVoiced − 周期の上限）が次のブロックより前にならない所で止める
             if (nextVoiced - (tMax + 1) >= static_cast<double> (e))
                 break;
             nextVoiced += unvoicedStep;
+            voicedRun = false;
             continue;
         }
         const float ratio = ratioFor (frameAt (static_cast<double> (m.t), avail), 0);
@@ -677,6 +747,8 @@ void Engine::process (const float* const* in, int numIn, float* out, int n, floa
             theta = voiced ? std::min (halfPi, theta + step) : std::max (0.0f, theta - step);
             float& v = accVoiced[static_cast<size_t> (t & accMask)];
             float& u = accUnvoiced[static_cast<size_t> (t & accMask)];
+            if (streamLog != nullptr)
+                streamLog->push_back ({ v, u, theta });
             // つなぎ終わった所は、重みをちょうど 1 と 0 にする（無声の断片を作らなかった所に、前の断片の裾を混ぜない）
             if (theta >= halfPi)
                 out[done + i] = v;

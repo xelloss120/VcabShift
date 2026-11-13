@@ -16,7 +16,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kWidth = 800, kHeight = 520;
+    static constexpr int kWidth = 800, kHeight = 600;
 
 private:
     struct Row

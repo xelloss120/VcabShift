@@ -61,6 +61,10 @@ public:
     void setMarkLog (std::vector<std::array<double, 4>>* log) { markLog = log; }
     // 開発用: 有声の断片ごとに { 出力の印の時刻, 使った元の印の時刻, 元の印の周期, 0 } を足す
     void setGrainLog (std::vector<std::array<double, 4>>* log) { grainLog = log; }
+    // 開発用: 出力の標本ごとに { 有声の流れ, 無声の流れ, つなぎの角度（0 で無声だけ、π/2 で有声だけ） } を足す
+    void setStreamLog (std::vector<std::array<float, 3>>* log) { streamLog = log; }
+    // 開発用: 声の出だしで最初の有声の断片を遡って置くごとに { つなぎの始まりの時刻, 置いた（置こうとした）出力の時刻, 置けたら 1 } を足す
+    void setBackfillLog (std::vector<std::array<double, 3>>* log) { backfillLog = log; }
 
     // 一律の倍率の範囲（これを超える分は補正で動かす）
     static constexpr float kMinRatio = 0.25f, kMaxRatio = 4.0f;
@@ -87,6 +91,8 @@ private:
     std::vector<std::array<float, 3>>* frameLog = nullptr;
     std::vector<std::array<double, 4>>* markLog = nullptr;
     std::vector<std::array<double, 4>>* grainLog = nullptr;
+    std::vector<std::array<float, 3>>* streamLog = nullptr;
+    std::vector<std::array<double, 3>>* backfillLog = nullptr;
     bool configured = false;
 
     // 長さ（標本数）
@@ -132,6 +138,7 @@ private:
     int64_t outPos = 0;
     double nextVoiced = 0.0, nextUnvoiced = 0.0;
     float theta = 0.0f;         // 有声の重み sin、無声の重み cos
+    bool voicedRun = false;     // 有声の流れの、前の断片が有声だったか（声の出だしで、最初の断片を遡って置くため）
 
     GrainMaker grain;
     // 写像（0 = 有声、1 = 無声。無声はフォルマントのつまみの代わりに無声フォルマントを使う）。
@@ -165,6 +172,7 @@ private:
     void placeMarks();
     void synthesize (int64_t blockStart, int64_t blockEnd);
     void writeGrain (std::vector<float>& acc, double centreOut, int halfOut, int64_t from);
+    bool startVoicedRun (int64_t o, double p);
     bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, const WarpMap* correction, int lifter, int stream, bool powerWindow);
     // t に一番近いフレーム。availInPos を渡すと、入力がその時刻まで届いた時点で分析済みのフレームに限る
     const Frame& frameAt (double t, int64_t availInPos = INT64_MAX) const;

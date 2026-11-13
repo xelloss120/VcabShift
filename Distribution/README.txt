@@ -1,4 +1,4 @@
-VcabShift 1.1.2
+VcabShift 1.1.3
 ===============
 
 声の高さ（ピッチ）と声色（フォルマント）を変えるボイスチェンジャーです（TD-PSOLA）。
@@ -38,5 +38,5 @@ VcabShift 1.1.2
   AGPLv3（LICENSE.txt）。使っているライブラリのライセンスは
   THIRD_PARTY_LICENSES.md にあります（GPLv3 の本文は GPL-3.0.txt）。
   この版のソースコード:
-    https://github.com/xelloss120/VcabShift/releases/tag/v1.1.2
+    https://github.com/xelloss120/VcabShift/releases/tag/v1.1.3
   VST is a trademark of Steinberg Media Technologies GmbH.
