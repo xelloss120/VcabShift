@@ -24,6 +24,10 @@ public:
     // lookahead: 先読みのフレームの数（何フレームさかのぼって決めるか）。octaveJump: 1 フレームで 1 オクターブ跳ぶ確率
     void prepare (float fs, float lowestMin, float highestMax, int lookahead, float octaveJump);
 
+    // 1 周期目の優先: 周期 τ の谷に、τ/2 の近くの谷がその深さ + margin より浅くなく（差が margin 未満）、かつ limit より深ければ、
+    // τ の確率を τ/2 の谷へ移す（倍の周期に取り違えないように。本来の pYIN にはない）。margin が 0 以下なら使わない
+    void setFirstPeriod (float margin, float limit) { firstMargin = margin; firstLimit = limit; }
+
     // 探す範囲を変える（それまでの記憶も消える）
     void configure (float fmin, float fmax);
 
@@ -49,7 +53,8 @@ private:
 
     float fs = 16000.0f;
     int lag = 2;
-    float octaveJump = 0.01f;
+    float octaveJump = 0.001f;
+    float firstMargin = 0.0f, firstLimit = 0.0f;
     int tauMin = 0, tauMax = 0;
     float binBase = 80.0f;   // 0 番の区画の高さ（Hz）
     int numBins = 0, maxBins = 0;

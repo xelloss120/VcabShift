@@ -8,6 +8,7 @@
 // --frames: 決まったフレームごとの { 窓の中心の時刻（秒、入力の時刻）, 有声, 高さ } を CSV に書く。
 // 終わりに、ブロックごとの処理時間の最大と 99.9% 点も出す（途切れの目安。ブロックの長さに対する割合）。
 // --lookahead n / --octave-jump p: ピッチ検出の先読みのフレームの数と、オクターブ跳びの確率（開発用。初期値 2 / 0.001）。
+// --first-period m l: ピッチ検出の 1 周期目の優先の、深さの差 m と深さの上限 l（開発用。初期値 0.05 0.5。差を 0 にすると使わない）。
 #include "Engine.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -81,6 +82,12 @@ static int run (int argc, char** argv)
         if (a == "--octave-jump" && i + 1 < argc)
         {
             tuning.octaveJump = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--first-period" && i + 2 < argc)
+        {
+            tuning.firstMargin = std::stof (argv[++i]);
+            tuning.firstLimit = std::stof (argv[++i]);
             continue;
         }
         if (a == "--track" && i + 1 < argc)

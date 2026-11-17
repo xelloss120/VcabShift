@@ -17,9 +17,6 @@ public:
     // maxHalfIn: 元の断片の半分の長さの上限、maxHalfOut: 伸縮後の半分の長さの上限、maxLifter: 補正の包絡の残す長さの上限（どれも標本数）
     void prepare (double sampleRate, int maxHalfIn, int maxHalfOut, int maxLifter);
 
-    // 元の断片を読むのに、中心の前後に要る標本の数（窓の半分＋補間の幅）
-    static int readMargin (float halfIn, float ratio);
-
     // seg: 元の音（seg[centre] が断片の中心）。halfIn: 元の断片の半分の長さ（halfOut × ratio）。
     // ratio: 一律の倍率（> 1 で縮めてフォルマントを上げる）。warp: 一律でなければ補正に使う写像（一律なら nullptr）。
     // lifter: 包絡の残す長さ（標本数）。out: 2 × halfOut + 1 個。
@@ -61,12 +58,17 @@ private:
     float gridLo = 0.0f, gridStep = 1.0f; // 格子の log2(Hz) の始まりと刻み
     std::array<float, kEnvGrid> gridHz {}; // 格子の各点の周波数
     // FFT の区画ごとの「元の周波数」（写像の逆）と「一律に伸縮する前の周波数」の、包絡の格子の上の位置。
-    // 写像・倍率・FFT の大きさが同じなら使い回す（区画ごとの対数の計算を省く）
-    std::vector<float> targetPos, sourcePos;
-    const WarpMap* inverseWarp = nullptr;
-    unsigned inverseVersion = 0;
-    int inverseSize = 0;
-    float inverseRatio = 0.0f;
+    // 写像・倍率・FFT の大きさが同じなら使い回す（区画ごとの対数の計算を省く）。
+    // 流れごとに持つ（有声と無声は写像も断片の長さも違うので、1 つだと、両方の断片を作るつなぎの所で毎回作り直す）
+    struct InverseTable
+    {
+        std::vector<float> targetPos, sourcePos;
+        const WarpMap* warp = nullptr;
+        unsigned version = 0;
+        int size = 0;
+        float ratio = 0.0f;
+    };
+    std::array<InverseTable, 2> inverseTables;
 
     float kernelAt (float x) const;
     float gridPos (float f) const;

@@ -1,4 +1,4 @@
-VcabShift 1.1.3
+VcabShift 1.2.0
 ===============
 
 声の高さ（ピッチ）と声色（フォルマント）を変えるボイスチェンジャーです（TD-PSOLA）。
@@ -29,6 +29,8 @@ VcabShift 1.1.3
   有声フォルマントのつまみからさらに動かす量（桃の線。0 はつまみのとおり）です。
   緑の線は、無声音（さ行・は行などの息の音）の動く量です（同じ目盛り）。
   F1〜F4 の点（有声は丸、無声はひし形）は、ドラッグで動かせます。
+  右上の「EQ」を押すと、声に追従する EQ（基音と F1〜F4 の所を
+  持ち上げる・下げる）の点と線に替わります。「フォルマント」で戻ります。
   薄い青の範囲は、声の高さを探す範囲（探索下限〜上限）です。
   グラフの下端の帯は、直近 3 秒の有声（青）と無声（灰）の判定です。
   詳しい説明は、つまみや項目にマウスを乗せると出ます。
@@ -38,5 +40,5 @@ VcabShift 1.1.3
   AGPLv3（LICENSE.txt）。使っているライブラリのライセンスは
   THIRD_PARTY_LICENSES.md にあります（GPLv3 の本文は GPL-3.0.txt）。
   この版のソースコード:
-    https://github.com/xelloss120/VcabShift/releases/tag/v1.1.3
+    https://github.com/xelloss120/VcabShift/releases/tag/v1.2.0
   VST is a trademark of Steinberg Media Technologies GmbH.

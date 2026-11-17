@@ -44,16 +44,7 @@ VcabShiftEditor::VcabShiftEditor (VcabShiftProcessor& p)
         r->label.setColour (juce::Label::textColourId, kText);
         r->label.setTooltip (utf8 (info.help));
         addAndMakeVisible (r->label);
-        if (info.type == vcab::ParamType::toggle)
-        {
-            // チェックボックスは、名前をボタンの横に書く（名前の欄は使わない）
-            r->label.setVisible (false);
-            r->toggle = std::make_unique<juce::ToggleButton> (utf8 (info.name));
-            r->toggle->setTooltip (utf8 (info.help));
-            addAndMakeVisible (*r->toggle);
-            r->toggleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, info.key, *r->toggle);
-        }
-        else if (info.type == vcab::ParamType::choice)
+        if (info.type == vcab::ParamType::choice)
         {
             r->combo = std::make_unique<juce::ComboBox>();
             for (size_t i = 0; i < info.choices.size(); ++i)
@@ -329,10 +320,10 @@ void VcabShiftEditor::timerCallback()
     updateMeasure();
 
     // 一律のときは有声F4以降と無声F4以降を使わないので、灰色にする
+    const bool on = proc.currentSettings().warpMode != vcab::WarpMode::uniform;
     for (auto id : { vcab::P::aboveF4, vcab::P::unvoicedAboveF4 })
         if (auto* r = row (id))
         {
-            const bool on = proc.currentSettings().warpMode != vcab::WarpMode::uniform;
             r->label.setAlpha (on ? 1.0f : 0.45f);
             r->combo->setEnabled (on);
             r->combo->setAlpha (on ? 1.0f : 0.45f);

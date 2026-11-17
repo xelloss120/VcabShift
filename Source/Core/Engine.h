@@ -5,6 +5,7 @@
 
 #include "Params.h"
 #include "Dsp/Fft.h"
+#include "Dsp/FollowEq.h"
 #include "Dsp/FormantTracker.h"
 #include "Dsp/Grain.h"
 #include "Dsp/PitchDetector.h"
@@ -50,8 +51,10 @@ public:
     struct Tuning
     {
         int pitchLookahead = 2;     // ピッチ検出の先読みのフレームの数（1 フレーム 5ms）
-        float octaveJump = 0.001f;
-        bool voicingCues = true;    // 有声・無声の判定に、周期性以外の手がかり（帯域の比、音量）を使う  // ピッチ検出の HMM の、1 フレームで 1 オクターブ跳ぶ確率（0.01 では速い抑揚の途中で 1 フレームだけ倍の高さへ跳んだ）
+        float octaveJump = 0.001f;  // ピッチ検出の HMM の、1 フレームで 1 オクターブ跳ぶ確率（0.01 では速い抑揚の途中で 1 フレームだけ倍の高さへ跳んだ）
+        bool voicingCues = true;    // 有声・無声の判定に、周期性以外の手がかり（帯域の比、音量）を使う
+        float firstMargin = 0.05f;  // 1 周期目の優先（PitchDetector::setFirstPeriod）の深さの差と上限。差が 0 以下で使わない
+        float firstLimit = 0.5f;
     };
     void setTuning (const Tuning& t) { tuning = t; }
 
@@ -128,7 +131,9 @@ private:
     std::vector<float> cueWindow;
     int cueSize = 0;            // FFT の大きさ（ピッチ検出の窓の長さ以上の 2 のべき乗）
 
-    std::vector<Mark> marks;
+    static constexpr int kFrameRing = 1024;
+    static constexpr int kMarkRing = 4096;
+    std::vector<Mark> marks;    // 輪（番号 % kMarkRing の位置）
     int64_t markCount = 0;
     int64_t markCursor = 0;     // 有声の流れが今見ている印
 
@@ -141,6 +146,9 @@ private:
     bool voicedRun = false;     // 有声の流れの、前の断片が有声だったか（声の出だしで、最初の断片を遡って置くため）
 
     GrainMaker grain;
+    // 声に追従する EQ（有声の流れ: 基音・F1〜F4、無声の流れ: F1〜F4）。2 つの流れをつなぐ直前にかける
+    FollowEq eqVoiced, eqUnvoiced;
+    void updateEqTargets (const Frame& f);
     // 写像（0 = 有声、1 = 無声。無声はフォルマントのつまみの代わりに無声フォルマントを使う）。
     // 最後に作ったときの入力を持ち、同じなら作り直さない
     struct WarpCache
@@ -170,10 +178,26 @@ private:
     void finalizeFrame (const PitchResult& pitch);
     void voicingCue (int windowLength, float levelDb, float& up, float& down);
     void placeMarks();
+    // 印を 1 つ探す。入力がまだ足りなければ false（次のブロックでやり直す）。readyAt は、その印を決めるのに要る入力の時刻
+    bool nextVoicedMark (const Mark& last, float period, int64_t& t, int64_t& readyAt, double& score);
+    bool firstVoicedMark (const Frame& f, int64_t from, int64_t& t, int64_t& readyAt);
     void synthesize (int64_t blockStart, int64_t blockEnd);
     void writeGrain (std::vector<float>& acc, double centreOut, int halfOut, int64_t from);
     bool startVoicedRun (int64_t o, double p);
     bool makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, const WarpMap* correction, int lifter, int stream, bool powerWindow);
+    // 有声の断片の形: 一律の倍率、伸縮後と元の半分の長さ、補正の包絡の残す長さ
+    struct VoicedShape
+    {
+        float ratio = 1.0f;
+        int halfOut = 0;
+        float halfIn = 0.0f;
+        int lifter = 0;
+    };
+    VoicedShape voicedShape (const Mark& m, const Frame& f);
+    bool makeVoicedGrain (const Mark& m, const VoicedShape& s) { return makeGrain (m.t, s.halfIn, s.halfOut, s.ratio, correctionFor (0), s.lifter, 0, false); }
+    Mark& markAt (int64_t i) { return marks[static_cast<size_t> (i % kMarkRing)]; }
+    Frame& frameSlot (int64_t j) { return frames[static_cast<size_t> (j % kFrameRing)]; }
+    const Frame& frameSlot (int64_t j) const { return frames[static_cast<size_t> (j % kFrameRing)]; }
     // t に一番近いフレーム。availInPos を渡すと、入力がその時刻まで届いた時点で分析済みのフレームに限る
     const Frame& frameAt (double t, int64_t availInPos = INT64_MAX) const;
     double frameCentre (int64_t j) const;      // j 番目のフレームの窓の中心の時刻

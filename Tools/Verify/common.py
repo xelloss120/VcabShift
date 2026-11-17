@@ -35,7 +35,8 @@ def path(name):
 
 def read(p):
     fs, x = wf.read(p)
-    x = x.astype(np.float64) / (2 ** 31 if x.dtype == np.int32 else 32768)
+    # 24 ビットは int32 で読まれる。浮動小数の WAV（--streams の出力など）は、そのまま
+    x = x.astype(np.float64) / {'int16': 32768.0, 'int32': 2.0 ** 31}.get(x.dtype.name, 1.0)
     return fs, (x if x.ndim == 1 else x[:, 0])
 
 

@@ -2,6 +2,8 @@
 //   vcabsh_shot 入力.wav 出力.png [キー=値 ...] [--at 秒]
 // --at: 何秒流したところで撮るか（初期値 2 秒）
 // --tooltip x,y: 画面の中の (x, y) にマウスを乗せたときのツールチップも描き込む（出る位置の確かめ用）
+// --scale n: n 倍の解像度で描く（紹介画像用。初期値 1）
+// --eq: グラフを EQ の表示にして撮る
 #include "PluginProcessor.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -19,6 +21,7 @@ static int run (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI gui;
 
     double at = 2.0;
+    float scale = 1.0f;
     juce::Point<int> tipAt { -1, -1 };
     auto processor = std::make_unique<VcabShiftProcessor>();
     for (int i = 3; i < argc; ++i)
@@ -28,6 +31,16 @@ static int run (int argc, char** argv)
         {
             const auto xy = juce::StringArray::fromTokens (argv[++i], ",", "");
             tipAt = { xy[0].getIntValue(), xy[1].getIntValue() };
+            continue;
+        }
+        if (a == "--eq")
+        {
+            processor->eqView = true;
+            continue;
+        }
+        if (a == "--scale" && i + 1 < argc)
+        {
+            scale = std::stof (argv[++i]);
             continue;
         }
         if (a == "--at" && i + 1 < argc)
@@ -93,7 +106,7 @@ static int run (int argc, char** argv)
         juce::MessageManager::getInstance()->runDispatchLoopUntil (16);
     }
 
-    auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
+    auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, scale);
     if (tipAt.x >= 0)
     {
         auto* c = editor->getComponentAt (tipAt);
@@ -104,6 +117,7 @@ static int run (int argc, char** argv)
             auto& lf = editor->getLookAndFeel();
             const auto b = lf.getTooltipBounds (tip, tipAt, editor->getLocalBounds());
             juce::Graphics g (image);
+            g.addTransform (juce::AffineTransform::scale (scale));
             g.setColour (juce::Colours::red);
             g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre (tipAt.toFloat())); // マウスの位置
             g.setOrigin (b.getPosition());

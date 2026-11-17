@@ -1,9 +1,10 @@
 // 2 のべき乗の大きさの複素 FFT（基数 2、その場で計算）。
-// 回転因子とビット反転の表は、使う一番大きい大きさの分を prepare で作り、小さい大きさはそれを間引いて使う。
+// 回転因子の表は、使う一番大きい大きさの分を prepare で作り、小さい大きさはそれを間引いて使う。
 #pragma once
 
 #include <cmath>
 #include <complex>
+#include <utility>
 #include <vector>
 
 namespace vcab

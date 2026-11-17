@@ -13,20 +13,20 @@ import scipy.io.wavfile as wf
 import scipy.signal as ss
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..', 'Verify'))
+from common import VOWELS, shape  # 合成の声の母音と作り方は、確かめのスクリプトと同じもの  # noqa: E402
 ROOT = os.path.join(HERE, '..', '..')
 RENDER = os.path.join(ROOT, 'build', 'vcabsh_render_artefacts', 'Release', 'vcabsh_render.exe')
 WORK = os.path.join(ROOT, 'build', 'regress')
 FS = 48000
 
-VOWELS = {'a': (750, 1200, 2600, 3500), 'i': (300, 2300, 3000, 3700), 'u': (350, 1400, 2300, 3500),
-          'e': (480, 2000, 2700, 3600), 'o': (480, 850, 2600, 3500)}
-BANDWIDTHS = (90, 110, 160, 250)
 SEG = 0.7  # 1 母音の長さ（0.6 秒の声と 0.1 秒の無音）
 
 CASES = {
     'through_yin': 'pitch=0 formant=0 unvoiced_formant=0',
     'default': '',
-    'default_uv6': 'unvoiced_formant=6',
+    'default_uv3': 'unvoiced_formant=3',  # 無声フォルマントの前の初期値（2026-11-17 に +6 にした）
+    'eq': 'eq_f0=6 eq_f2=-4 eq_f4=3 eq_uf3=5 eq_uf1=-3',  # 声に追従する EQ（有声と無声）
     'bands': 'warp_mode=2 f1_delta=-3 f2_delta=4 f4_delta=2 above_f4=2',
     'formants': 'f2_delta=4',
     'formants_above_uniform': 'f1_delta=-2 f3_delta=3 above_f4=1',
@@ -45,12 +45,7 @@ def vowel(v, f0, dur):
     ph = np.cumsum(f) / FS
     pulse = np.zeros(n)
     pulse[np.where(np.diff(np.floor(ph)) > 0)[0]] = 1
-    y = ss.lfilter([1], [1, -0.97], ss.lfilter([1], [1, -0.97], pulse))
-    y = ss.lfilter([1, -1], [1], y)
-    for F, B in zip(VOWELS[v], BANDWIDTHS):
-        r = np.exp(-np.pi * B / FS)
-        th = 2 * np.pi * F / FS
-        y = ss.lfilter([1 - r], [1, -2 * r * np.cos(th), r * r], y)
+    y = shape(pulse, v, FS)
     y = y / np.max(np.abs(y)) * 0.3
     return y * np.minimum(1, np.minimum(t / 0.02, (dur - t) / 0.02))
 

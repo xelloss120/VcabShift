@@ -19,7 +19,7 @@ std::vector<ParamInfo> makeTable()
         { P::formant, "formant", "有声フォルマント", T::real, -24.0f, 24.0f, 6.0f, 0.1f, 0.0f, "半音", {},
           "有声音（母音など、声帯が震える音）の声色（声道の響き）を動かす量。上げると小柄な声に、下げると大柄な声になります。\n"
           "無声音（さ行・は行などの息の音）には使わず、「無声フォルマント」を使います。" },
-        { P::unvoicedFormant, "unvoiced_formant", "無声フォルマント", T::real, -24.0f, 24.0f, 3.0f, 0.1f, 0.0f, "半音", {},
+        { P::unvoicedFormant, "unvoiced_formant", "無声フォルマント", T::real, -24.0f, 24.0f, 6.0f, 0.1f, 0.0f, "半音", {},
           "無声音（さ行・は行などの息の音）の声色を動かす量。有声フォルマントと別に決められます。\n"
           "F1〜F4 の位置は有声音と同じで、差（グラフの緑のひし形）と F4 より上の扱い（無声F4以降）は、無声音で別に決められます。\n"
           "上げすぎると、さ行がチリチリ、シャリシャリと鋭くなります。" },
@@ -65,8 +65,26 @@ std::vector<ParamInfo> makeTable()
           "F4合わせ: 無声の F4 と同じだけ。\n"
           "設定合わせ: 無声フォルマントのつまみの分だけ。\n"
           "地声合わせ: 動かさない。" },
+        { P::eqF0, "eq_f0", "EQ 基音", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "出力の声の高さ（基音）の所を、持ち上げる（下げる）量。中心は声の高さに合わせて動きます（幅 2/3 オクターブ）。" },
+        { P::eqF1, "eq_f1", "EQ F1", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "有声音で、動かした後の F1 の山を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqF2, "eq_f2", "EQ F2", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "有声音で、動かした後の F2 の山を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqF3, "eq_f3", "EQ F3", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "有声音で、動かした後の F3 の山を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqF4, "eq_f4", "EQ F4", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "有声音で、動かした後の F4 の山を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqUf1, "eq_uf1", "無声 EQ F1", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "無声音で、動かした後の F1 の所を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqUf2, "eq_uf2", "無声 EQ F2", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "無声音で、動かした後の F2 の所を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqUf3, "eq_uf3", "無声 EQ F3", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "無声音で、動かした後の F3 の所を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
+        { P::eqUf4, "eq_uf4", "無声 EQ F4", T::real, -12.0f, 12.0f, 0.0f, 0.1f, 0.0f, "dB", {},
+          "無声音で、動かした後の F4 の所を、持ち上げる（下げる）量（幅 1 オクターブ）。" },
         { P::pitchMin, "pitch_min", "探索下限", T::real, 40.0f, 200.0f, 80.0f, 1.0f, 0.0f, "Hz", {},
-          "声の高さを探す範囲の下限。遅延はこの値で決まります（周期の 2 倍。80Hz で 25ms）。声の低さに合わせて、なるべく高くすると遅延が減ります。" },
+          "声の高さを探す範囲の下限。遅延はこの値で決まります（周期の 2 倍 ＋ 10ms。80Hz で 35ms）。声の低さに合わせて、なるべく高くすると遅延が減ります。" },
         { P::pitchMax, "pitch_max", "探索上限", T::real, 150.0f, 1000.0f, 600.0f, 1.0f, 0.0f, "Hz", {},
           "声の高さを探す範囲の上限。遅延には関係しません。笑い声や叫び声で高くなる分まで入るよう、広めにしておくのがおすすめです。" },
         { P::inputChannel, "input_channel", "入力チャンネル", T::choice, 0.0f, 3.0f, 0.0f, 1.0f, 0.0f, "",
@@ -78,6 +96,20 @@ std::vector<ParamInfo> makeTable()
     assert (static_cast<int> (t.size()) == kNumParams);
     for (int i = 0; i < kNumParams; ++i)
         assert (static_cast<int> (t[static_cast<size_t> (i)].id) == i);
+
+    // Settings の仮の初期値が、表の初期値と同じことを確かめる（表だけ変えて、仮の値が古いまま残らないように）
+    std::array<float, kNumParams> v {};
+    for (const auto& p : t)
+        v[static_cast<size_t> (p.id)] = p.defaultValue;
+    const Settings a {};
+    const Settings b = Settings::fromValues (v);
+    assert (a.pitch == b.pitch && a.formant == b.formant && a.unvoicedFormant == b.unvoicedFormant && a.warpMode == b.warpMode
+            && a.delta == b.delta && a.anchor == b.anchor && a.aboveF4 == b.aboveF4
+            && a.unvoicedDelta == b.unvoicedDelta && a.unvoicedAboveF4 == b.unvoicedAboveF4
+            && a.eq == b.eq && a.unvoicedEq == b.unvoicedEq
+            && a.pitchMin == b.pitchMin && a.pitchMax == b.pitchMax && a.inputChannel == b.inputChannel);
+    (void) a;
+    (void) b;
     return t;
 }
 
@@ -125,6 +157,9 @@ Settings Settings::fromValues (const std::array<float, kNumParams>& v)
         s.unvoicedDelta = { 0.0f, 0.0f, 0.0f, 0.0f };
         s.unvoicedAboveF4 = AboveF4::followUniform;
     }
+    // EQ は動かし方によらず使う（一律でも、追いかけた F1〜F4 に追従する）
+    s.eq = { get (P::eqF0), get (P::eqF1), get (P::eqF2), get (P::eqF3), get (P::eqF4) };
+    s.unvoicedEq = { get (P::eqUf1), get (P::eqUf2), get (P::eqUf3), get (P::eqUf4) };
     s.pitchMin = get (P::pitchMin);
     // 上限が下限の 1.5 倍より狭いときは、下限の 1.5 倍として扱う（つまみの値は書き換えない）
     s.pitchMax = std::max (get (P::pitchMax), s.pitchMin * 1.5f);

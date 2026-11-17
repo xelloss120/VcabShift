@@ -37,9 +37,12 @@ void GrainMaker::prepare (double sampleRate, int maxHalfIn, int maxHalfOut, int 
     spec.assign (static_cast<size_t> (n), {});
     spec2.assign (static_cast<size_t> (n), {});
     envelope.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
-    targetPos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
-    sourcePos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
-    inverseWarp = nullptr;
+    for (auto& t : inverseTables)
+    {
+        t.targetPos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
+        t.sourcePos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
+        t.warp = nullptr;
+    }
     gridLo = std::log2 (kGridLowHz);
     gridStep = (static_cast<float> (std::log2 (fs * 0.5)) - gridLo) / static_cast<float> (kEnvGrid - 1);
     for (int g = 0; g < kEnvGrid; ++g)
@@ -62,11 +65,6 @@ void GrainMaker::prepare (double sampleRate, int maxHalfIn, int maxHalfOut, int 
         const double w = 0.42 + 0.5 * std::cos (kPi * t) + 0.08 * std::cos (2.0 * kPi * t);
         kernel[i] = static_cast<float> (s * w);
     }
-}
-
-int GrainMaker::readMargin (float halfIn, float ratio)
-{
-    return static_cast<int> (std::ceil (halfIn)) + static_cast<int> (std::ceil (kZeroCrossings * std::max (1.0f, ratio))) + 2;
 }
 
 float GrainMaker::kernelAt (float x) const
@@ -206,22 +204,23 @@ void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, 
         spec2[static_cast<size_t> (lpad + i)] = out[i];
     fft.transform (spec2.data(), mo, false);
 
-    if (warp != inverseWarp || warp->version() != inverseVersion || mo != inverseSize || ratio != inverseRatio)
+    InverseTable& inv = inverseTables[static_cast<size_t> (stream)];
+    if (warp != inv.warp || warp->version() != inv.version || mo != inv.size || ratio != inv.ratio)
     {
         for (int b = 0; b <= mo / 2; ++b)
         {
             const float f = static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo);
-            targetPos[static_cast<size_t> (b)] = gridPos (warp->inverse (f));
-            sourcePos[static_cast<size_t> (b)] = gridPos (f / ratio);
+            inv.targetPos[static_cast<size_t> (b)] = gridPos (warp->inverse (f));
+            inv.sourcePos[static_cast<size_t> (b)] = gridPos (f / ratio);
         }
-        inverseWarp = warp;
-        inverseVersion = warp->version();
-        inverseSize = mo;
-        inverseRatio = ratio;
+        inv.warp = warp;
+        inv.version = warp->version();
+        inv.size = mo;
+        inv.ratio = ratio;
     }
     for (int b = 0; b <= mo / 2; ++b)
     {
-        const float c = std::clamp (envAtPos (st, targetPos[static_cast<size_t> (b)]) - envAtPos (st, sourcePos[static_cast<size_t> (b)]),
+        const float c = std::clamp (envAtPos (st, inv.targetPos[static_cast<size_t> (b)]) - envAtPos (st, inv.sourcePos[static_cast<size_t> (b)]),
                                     -kMaxCorrection, kMaxCorrection);
         const float g = std::exp (c);
         spec2[static_cast<size_t> (b)] *= g;

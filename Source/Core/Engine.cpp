@@ -25,16 +25,6 @@ constexpr float kCueRiseNone = 1.0f, kCueRiseFull = 5.0f;      // 有声に寄�
 constexpr double kChannelSwitchSeconds = 2.0;
 constexpr float kChannelSwitchRatio = 3.98f; // 6dB（パワー）
 constexpr float kSilentGrainPeak = 1.0e-6f; // これより小さい断片は無音として作らない（-120dBFS）
-constexpr int kFrameRing = 1024;
-constexpr int kMarkRing = 4096;
-
-int64_t ringSize (double samples)
-{
-    int64_t n = 1;
-    while (n < static_cast<int64_t> (samples))
-        n <<= 1;
-    return n;
-}
 } // namespace
 
 void Engine::prepare (double sampleRate, int maxBlockSize)
@@ -42,7 +32,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     fs = sampleRate;
 
     const int tMaxAbs = static_cast<int> (std::ceil (fs / kLowestPitch));
-    const int64_t r = ringSize (fs * 1.0 + maxBlockSize);
+    const int64_t r = Fft::nextPow2 (static_cast<int> (fs * 1.0 + maxBlockSize));
     xRing.assign (static_cast<size_t> (r), 0.0f);
     xMask = r - 1;
     accVoiced.assign (static_cast<size_t> (r), 0.0f);
@@ -67,20 +57,19 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     }
     for (auto& c : lowpass)
         c = static_cast<float> (c / sum);
-    const int64_t dr = ringSize (fsd * 1.0);
+    const int64_t dr = Fft::nextPow2 (static_cast<int> (fsd * 1.0));
     dRing.assign (static_cast<size_t> (dr), 0.0f);
     dMask = dr - 1;
 
     lag = std::clamp (tuning.pitchLookahead, 0, kPendingRing - 1);
     detector.prepare (static_cast<float> (fsd), static_cast<float> (kLowestPitch), static_cast<float> (kHighestPitch), lag, tuning.octaveJump);
+    detector.setFirstPeriod (tuning.firstMargin, tuning.firstLimit);
     hop = static_cast<int> (std::lround (kHopSeconds * fs));
     tracker.prepare (static_cast<float> (fsd), static_cast<float> (hop / fs));
     scratch.assign (static_cast<size_t> (std::max (2 * (static_cast<int> (std::ceil (fsd / kLowestPitch)) + 4) + 2,
                                                    tracker.windowLength()) + 8), 0.0f);
     {
-        int n = 1;
-        while (n < static_cast<int> (scratch.size()))
-            n <<= 1;
+        const int n = Fft::nextPow2 (static_cast<int> (scratch.size()));
         cueFft.prepare (n);
         cueBuf.assign (static_cast<size_t> (n), {});
         cueWindow.assign (scratch.size(), 0.0f);
@@ -97,6 +86,8 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     grainOut.assign (static_cast<size_t> (2 * maxHalfOut + 1), 0.0f);
     corr.assign (static_cast<size_t> (4 * tMaxAbs + 8), 0.0f);
     mono.assign (static_cast<size_t> (std::max (1, maxBlockSize)), 0.0f);
+    eqVoiced.prepare (fs, 5, { kEqBandwidthF0, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant });
+    eqUnvoiced.prepare (fs, 4, { kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant });
 
     configured = false;
     configure();
@@ -123,9 +114,7 @@ void Engine::configure()
     detector.configure (settings.pitchMin, settings.pitchMax);
     {
         const int wp = detector.windowLength();
-        cueSize = 1;
-        while (cueSize < wp)
-            cueSize <<= 1;
+        cueSize = Fft::nextPow2 (wp);
         for (int i = 0; i < wp; ++i)
             cueWindow[static_cast<size_t> (i)] = static_cast<float> (0.5 - 0.5 * std::cos (2.0 * kPi * (i + 0.5) / wp));
     }
@@ -154,7 +143,24 @@ void Engine::configure()
     for (auto& w : warps)
         w.valid = false;
     grain.forgetEnvelope();
+    eqVoiced.reset();
+    eqUnvoiced.reset();
     configured = true;
+}
+
+// EQ の狙い: 基音は出力の声の高さ（無声のフレームでは前の高さのまま）、F1〜F4 は動かした後の位置
+void Engine::updateEqTargets (const Frame& f)
+{
+    const auto anchors = eqAnchors (settings, f.fm.f);
+    const auto cv = eqFormantCentres (settings, anchors, 0);
+    const auto cu = eqFormantCentres (settings, anchors, 1);
+    const float f0 = f.voiced && f.period > 0.0f ? static_cast<float> (fs / f.period * std::exp2 (settings.pitch / 12.0)) : 0.0f;
+    eqVoiced.setTarget (0, f0, settings.eq[0]);
+    for (int k = 0; k < 4; ++k)
+    {
+        eqVoiced.setTarget (k + 1, cv[static_cast<size_t> (k)], settings.eq[static_cast<size_t> (k + 1)]);
+        eqUnvoiced.setTarget (k, cu[static_cast<size_t> (k)], settings.unvoicedEq[static_cast<size_t> (k)]);
+    }
 }
 
 void Engine::selectInput (const float* const* in, int numIn, int n, float* out)
@@ -298,7 +304,7 @@ void Engine::finalizeFrame (const PitchResult& pitch)
 {
     // 落とした音の i 番目の標本の時刻（元の標本の番号）
     const int64_t newest = dCount - 1;
-    Frame& f = frames[static_cast<size_t> (frameCount % kFrameRing)];
+    Frame& f = frameSlot (frameCount);
     f = Frame {};
     f.centre = frameCentre (frameCount);
     const float levelDb = pendingLevel[static_cast<size_t> (frameCount % kPendingRing)];
@@ -367,146 +373,150 @@ const Engine::Frame& Engine::frameAt (double t, int64_t availInPos) const
         return none;
     int64_t j = nearestFrame (t);
     j = std::clamp (j, std::max<int64_t> (0, frameCount - kFrameRing + 1), latest);
-    return frames[static_cast<size_t> (j % kFrameRing)];
+    return frameSlot (j);
 }
 
 void Engine::placeMarks()
 {
     if (frameCount == 0)
         return;
-    auto push = [this] (int64_t t, float period, bool voiced, int64_t ready)
+    auto push = [this] (int64_t t, float period, bool voiced, int64_t ready, double score)
     {
-        marks[static_cast<size_t> (markCount % kMarkRing)] = { t, period, voiced, ready };
+        markAt (markCount) = { t, period, voiced, ready };
         ++markCount;
+        if (voiced && markLog != nullptr)
+            markLog->push_back ({ static_cast<double> (t), period, 1.0, score });
     };
+    constexpr double kNoScore = -2.0; // 相互相関で探していない印（有声の始まり）の、記録の値
     if (markCount == 0)
     {
         // 最初の印は、最初のフレームの時刻に置く（ブロックの区切りによらないように）
-        push (static_cast<int64_t> (std::floor (frameCentre (0))), 0.0f, false, (1 + lag) * hop);
+        push (static_cast<int64_t> (std::floor (frameCentre (0))), 0.0f, false, (1 + lag) * hop, kNoScore);
         markCursor = 0;
     }
 
-    for (int guard = 0; guard < 256; ++guard)
+    // 決まったフレームと届いた入力で置ける所まで置く（どの道も、印を 1 つ先へ進めるか抜ける。上限は念のためで、輪の大きさ）
+    for (int guard = 0; guard < kMarkRing; ++guard)
     {
-        const Mark last = marks[static_cast<size_t> ((markCount - 1) % kMarkRing)];
-        if (last.voiced)
+        const Mark last = markAt (markCount - 1);
+        // 次の印のあたり（有声の後は 1 周期先、無声の後は一定の間隔の先）のフレームで、有声か無声かを決める
+        const int64_t tn = last.t + unvoicedStep;
+        const double probe = last.voiced ? static_cast<double> (last.t) + last.period : static_cast<double> (tn);
+        if (nearestFrame (probe) >= frameCount) // 使うフレームがまだ決まっていない
+            break;
+        const Frame& f = frameAt (probe);
+        const int64_t knownAt = std::max (last.ready, inPosWhenKnown (probe));
+        if (! f.voiced)
         {
-            if (nearestFrame (last.t + last.period) >= frameCount) // 使うフレームがまだ決まっていない
-                break;
-            const Frame& f = frameAt (last.t + last.period);
-            const int64_t knownAt = std::max (last.ready, inPosWhenKnown (last.t + last.period));
-            if (! f.voiced)
-            {
-                push (last.t + unvoicedStep, 0.0f, false, knownAt);
-                continue;
-            }
-            // 前の印の 1 周期先を、波形の重なり（正規化した相互相関）で探す
-            const float period = f.period;
-            const int lw = std::max (8, static_cast<int> (std::lround (period)));
-            const int64_t lo = last.t + static_cast<int64_t> (std::floor (0.8 * period));
-            const int64_t hi = last.t + static_cast<int64_t> (std::ceil (1.2 * period));
-            if (hi + lw / 2 >= inPos)
-                break;
-            const int64_t base = last.t - lw / 2;
-            const int64_t span = hi + lw / 2 - base + 1;
-            if (span > static_cast<int64_t> (corr.size()))
-                break;
-            for (int64_t i = 0; i < span; ++i)
-                corr[static_cast<size_t> (i)] = x (base + i);
-            double refE = 0.0;
-            for (int i = 0; i < lw; ++i)
-                refE += static_cast<double> (corr[static_cast<size_t> (i)]) * corr[static_cast<size_t> (i)];
-            int64_t best = last.t + static_cast<int64_t> (std::lround (period));
-            double bestScore = -2.0;
-            for (int64_t c = lo; c <= hi; ++c)
-            {
-                const int64_t off = c - lw / 2 - base;
-                double num = 0.0, e = 0.0;
-                for (int i = 0; i < lw; ++i)
-                {
-                    const double v = corr[static_cast<size_t> (off + i)];
-                    num += corr[static_cast<size_t> (i)] * v;
-                    e += v * v;
-                }
-                const double score = num / std::sqrt (refE * e + 1.0e-30);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    best = c;
-                }
-            }
-            push (best, period, true, std::max (knownAt, hi + lw / 2 + 1));
-            if (markLog != nullptr)
-                markLog->push_back ({ static_cast<double> (best), period, 1.0, bestScore });
+            push (tn, 0.0f, false, knownAt, kNoScore);
+            continue;
         }
-        else
+        int64_t t = 0, readyAt = 0;
+        double score = kNoScore;
+        if (! (last.voiced ? nextVoicedMark (last, f.period, t, readyAt, score) : firstVoicedMark (f, tn, t, readyAt)))
+            break;
+        push (t, f.period, true, std::max (knownAt, readyAt), score);
+    }
+}
+
+// 前の有声の印の 1 周期先を、波形の重なり（正規化した相互相関）で探す
+bool Engine::nextVoicedMark (const Mark& last, float period, int64_t& t, int64_t& readyAt, double& score)
+{
+    const int lw = std::max (8, static_cast<int> (std::lround (period)));
+    const int64_t lo = last.t + static_cast<int64_t> (std::floor (0.8 * period));
+    const int64_t hi = last.t + static_cast<int64_t> (std::ceil (1.2 * period));
+    if (hi + lw / 2 >= inPos)
+        return false;
+    const int64_t base = last.t - lw / 2;
+    const int64_t span = hi + lw / 2 - base + 1;
+    if (span > static_cast<int64_t> (corr.size()))
+        return false;
+    for (int64_t i = 0; i < span; ++i)
+        corr[static_cast<size_t> (i)] = x (base + i);
+    double refE = 0.0;
+    for (int i = 0; i < lw; ++i)
+        refE += static_cast<double> (corr[static_cast<size_t> (i)]) * corr[static_cast<size_t> (i)];
+    int64_t best = last.t + static_cast<int64_t> (std::lround (period));
+    double bestScore = -2.0;
+    for (int64_t c = lo; c <= hi; ++c)
+    {
+        const int64_t off = c - lw / 2 - base;
+        double num = 0.0, e = 0.0;
+        for (int i = 0; i < lw; ++i)
         {
-            const int64_t tn = last.t + unvoicedStep;
-            if (nearestFrame (static_cast<double> (tn)) >= frameCount)
-                break;
-            const Frame& f = frameAt (static_cast<double> (tn));
-            const int64_t knownAt = std::max (last.ready, inPosWhenKnown (static_cast<double> (tn)));
-            if (! f.voiced)
-            {
-                push (tn, 0.0f, false, knownAt);
-                continue;
-            }
-            // 有声の始まり: 1 周期の中で、声帯のパルスらしい所に印を置く。
-            // そのフレームの LPC で声道の響きを除いた音（残差）の一番大きい所。LPC がなければ、元の音の一番大きい所。
-            // （元の音のままだと、声の出だしで音量が上がっていく途中は、パルスでない響きの山を選ぶことがあり、
-            //   以後の印もその位置を保つので、声の区間ごとにパルスに対する印の位置が運次第になっていた）
-            const int len = static_cast<int> (std::lround (f.period));
-            if (tn + len >= inPos)
-                break;
-            int64_t best = tn;
-            int64_t readyAt = tn + len + 1;
-            const int64_t d0 = static_cast<int64_t> (std::ceil ((static_cast<double> (tn) + lpDelay + 1.0) / decim - 1.0));
-            const int64_t d1 = static_cast<int64_t> (std::floor ((static_cast<double> (tn + len - 1) + lpDelay + 1.0) / decim - 1.0));
-            const int order = f.fm.lpcOrder;
-            if (f.fm.lpcValid && d1 >= d0 && d0 - order - 1 >= 0 && d0 - order - 1 > dCount - static_cast<int64_t> (dRing.size()))
-            {
-                if (d1 >= dCount)
-                    break;
-                const auto dr = [this] (int64_t k) { return dRing[static_cast<size_t> (k & dMask)]; };
-                float bestE = -1.0f;
-                int64_t bestD = d0;
-                for (int64_t d = d0; d <= d1; ++d)
-                {
-                    double e = 0.0;
-                    for (int k = 0; k <= order; ++k)
-                    {
-                        const int64_t j = d - k;
-                        const double y = dr (j) - kLpcPreEmphasis * dr (j - 1);
-                        e += f.fm.lpc[static_cast<size_t> (k)] * y;
-                    }
-                    if (static_cast<float> (std::abs (e)) > bestE)
-                    {
-                        bestE = static_cast<float> (std::abs (e));
-                        bestD = d;
-                    }
-                }
-                // 落とした音の番号から、入力の時刻へ
-                best = std::clamp<int64_t> ((bestD + 1) * decim - 1 - lpDelay, tn, tn + len - 1);
-                readyAt = std::max (readyAt, (d1 + 1) * decim + lpDelay + 1);
-            }
-            else
-            {
-                float bestV = -1.0f;
-                for (int i = 0; i < len; ++i)
-                {
-                    const float v = std::abs (x (tn + i));
-                    if (v > bestV)
-                    {
-                        bestV = v;
-                        best = tn + i;
-                    }
-                }
-            }
-            push (best, f.period, true, std::max (knownAt, readyAt));
-            if (markLog != nullptr)
-                markLog->push_back ({ static_cast<double> (best), f.period, 1.0, -2.0 });
+            const double v = corr[static_cast<size_t> (off + i)];
+            num += corr[static_cast<size_t> (i)] * v;
+            e += v * v;
+        }
+        const double s = num / std::sqrt (refE * e + 1.0e-30);
+        if (s > bestScore)
+        {
+            bestScore = s;
+            best = c;
         }
     }
+    t = best;
+    score = bestScore;
+    readyAt = hi + lw / 2 + 1;
+    return true;
+}
+
+// 有声の始まり: from からの 1 周期の中で、声帯のパルスらしい所に印を置く。
+// そのフレームの LPC で声道の響きを除いた音（残差）の一番大きい所。LPC がなければ、元の音の一番大きい所。
+// （元の音のままだと、声の出だしで音量が上がっていく途中は、パルスでない響きの山を選ぶことがあり、
+//   以後の印もその位置を保つので、声の区間ごとにパルスに対する印の位置が運次第になっていた）
+bool Engine::firstVoicedMark (const Frame& f, int64_t from, int64_t& t, int64_t& readyAt)
+{
+    const int len = static_cast<int> (std::lround (f.period));
+    if (from + len >= inPos)
+        return false;
+    t = from;
+    readyAt = from + len + 1;
+    // 落とした音の番号で、from 〜 from + len − 1 に当たる範囲
+    const int64_t d0 = static_cast<int64_t> (std::ceil ((static_cast<double> (from) + lpDelay + 1.0) / decim - 1.0));
+    const int64_t d1 = static_cast<int64_t> (std::floor ((static_cast<double> (from + len - 1) + lpDelay + 1.0) / decim - 1.0));
+    const int order = f.fm.lpcOrder;
+    if (f.fm.lpcValid && d1 >= d0 && d0 - order - 1 >= 0 && d0 - order - 1 > dCount - static_cast<int64_t> (dRing.size()))
+    {
+        if (d1 >= dCount)
+            return false;
+        const auto dr = [this] (int64_t k) { return dRing[static_cast<size_t> (k & dMask)]; };
+        float bestE = -1.0f;
+        int64_t bestD = d0;
+        for (int64_t d = d0; d <= d1; ++d)
+        {
+            double e = 0.0;
+            for (int k = 0; k <= order; ++k)
+            {
+                const int64_t j = d - k;
+                const double y = dr (j) - kLpcPreEmphasis * dr (j - 1);
+                e += f.fm.lpc[static_cast<size_t> (k)] * y;
+            }
+            if (static_cast<float> (std::abs (e)) > bestE)
+            {
+                bestE = static_cast<float> (std::abs (e));
+                bestD = d;
+            }
+        }
+        // 落とした音の番号から、入力の時刻へ
+        t = std::clamp<int64_t> ((bestD + 1) * decim - 1 - lpDelay, from, from + len - 1);
+        // 落とした音の d1 番目は、入力が (d1 + 1) × decim 標本届いたときにできる
+        readyAt = std::max (readyAt, (d1 + 1) * decim);
+    }
+    else
+    {
+        float bestV = -1.0f;
+        for (int i = 0; i < len; ++i)
+        {
+            const float v = std::abs (x (from + i));
+            if (v > bestV)
+            {
+                bestV = v;
+                t = from + i;
+            }
+        }
+    }
+    return true;
 }
 
 float Engine::ratioFor (const Frame& f, int stream)
@@ -529,6 +539,17 @@ float Engine::ratioFor (const Frame& f, int stream)
         w.valid = true;
     }
     return std::clamp (w.map.uniformRatio(), kMinRatio, kMaxRatio);
+}
+
+Engine::VoicedShape Engine::voicedShape (const Mark& m, const Frame& f)
+{
+    // 倍率 ≥ 1 なら元の断片は 2 周期で、伸縮後は 2 周期 / 倍率。倍率 < 1 なら伸縮後を 2 周期にそろえる（元は 2 周期 × 倍率）
+    VoicedShape s;
+    s.ratio = ratioFor (f, 0);
+    s.halfOut = std::max (2, static_cast<int> (std::lround (s.ratio >= 1.0f ? m.period / s.ratio : m.period)));
+    s.halfIn = static_cast<float> (s.halfOut) * s.ratio;
+    s.lifter = std::min (static_cast<int> (std::lround (m.period * 0.5f)), lifterMax);
+    return s;
 }
 
 bool Engine::voicedThroughout (int64_t from, int64_t to, int64_t availInPos) const
@@ -583,26 +604,24 @@ bool Engine::startVoicedRun (int64_t o, double p)
     // そこで、最初の有声の印が決まったらすぐ、その印の時刻に最初の断片を置き、同じ断片を出力の印の間隔で前へ繰り返して、
     // つなぎの始まりまで有声の流れを埋める。
     int64_t i = std::max (markCursor, markCount - kMarkRing + 1);
-    while (i < markCount && ! marks[static_cast<size_t> (i % kMarkRing)].voiced)
+    while (i < markCount && ! markAt (i).voiced)
         ++i;
     if (i >= markCount)
         return false;
-    const Mark m = marks[static_cast<size_t> (i % kMarkRing)];
+    const Mark m = markAt (i);
     if (inPos < m.ready)
         return false;
     // 使うフレームは、印が決まる時点で決まっているものに限る（ブロックの大きさによらないように）
-    const float ratio = ratioFor (frameAt (static_cast<double> (m.t), m.ready), 0);
-    const int halfOut = std::max (2, static_cast<int> (std::lround (ratio >= 1.0f ? m.period / ratio : m.period)));
-    const float halfIn = static_cast<float> (halfOut) * ratio;
+    const VoicedShape shape = voicedShape (m, frameAt (static_cast<double> (m.t), m.ready));
+    const int halfOut = shape.halfOut;
     // 断片の元の音が全部届き、印も決まっている入力の時刻。この時刻に初めて届いたブロックで作るので、
     // 「この時刻 − 遅延」より後の出力はまだ出していない（どのブロックの大きさでも）
-    const int64_t when = std::max (m.ready, m.t + static_cast<int64_t> (std::ceil (halfIn)) + 1);
+    const int64_t when = std::max (m.ready, m.t + static_cast<int64_t> (std::ceil (shape.halfIn)) + 1);
     if (inPos < when)
         return false;
     const int64_t earliest = when - latency;
     const double first = std::max (static_cast<double> (m.t), static_cast<double> (earliest + halfOut));
-    const int lifter = std::min (static_cast<int> (std::lround (m.period * 0.5f)), lifterMax);
-    if (! makeGrain (m.t, halfIn, halfOut, ratio, correctionFor (0), lifter, 0, false))
+    if (! makeVoicedGrain (m, shape))
         return false;
     writeGrain (accVoiced, first, halfOut, std::max (o, earliest));
     if (grainLog != nullptr)
@@ -655,7 +674,7 @@ void Engine::synthesize (int64_t o, int64_t e)
         markCursor = std::max (markCursor, markCount - kMarkRing + 1);
         while (markCursor + 1 < markCount)
         {
-            const Mark& next = marks[static_cast<size_t> ((markCursor + 1) % kMarkRing)];
+            const Mark& next = markAt (markCursor + 1);
             if (static_cast<double> (next.t) > nextVoiced || next.ready > avail)
                 break;
             // 無声の後の最初の有声の印へは進まない（startVoicedRun が置く）
@@ -663,7 +682,7 @@ void Engine::synthesize (int64_t o, int64_t e)
                 break;
             ++markCursor;
         }
-        const Mark m = marks[static_cast<size_t> (markCursor % kMarkRing)];
+        const Mark m = markAt (markCursor);
         if (! m.voiced || ! voicedRun)
         {
             // 次に有声の断片が来ても、その書き始め（nextVoiced − 周期の上限）が次のブロックより前にならない所で止める
@@ -673,15 +692,12 @@ void Engine::synthesize (int64_t o, int64_t e)
             voicedRun = false;
             continue;
         }
-        const float ratio = ratioFor (frameAt (static_cast<double> (m.t), avail), 0);
-        const int halfOut = std::max (2, static_cast<int> (std::lround (ratio >= 1.0f ? m.period / ratio : m.period)));
-        const float halfIn = static_cast<float> (halfOut) * ratio;
-        if (nextVoiced - halfOut >= static_cast<double> (e))
+        const VoicedShape shape = voicedShape (m, frameAt (static_cast<double> (m.t), avail));
+        if (nextVoiced - shape.halfOut >= static_cast<double> (e))
             break;
-        const int lifter = std::min (static_cast<int> (std::lround (m.period * 0.5f)), lifterMax);
-        if (! makeGrain (m.t, halfIn, halfOut, ratio, correctionFor (0), lifter, 0, false))
+        if (! makeVoicedGrain (m, shape))
             break;
-        writeGrain (accVoiced, nextVoiced, halfOut, o);
+        writeGrain (accVoiced, nextVoiced, shape.halfOut, o);
         if (grainLog != nullptr)
             grainLog->push_back ({ nextVoiced, static_cast<double> (m.t), m.period, 0.0 });
         nextVoiced += m.period / p;
@@ -740,13 +756,26 @@ void Engine::process (const float* const* in, int numIn, float* out, int n, floa
 
         constexpr float halfPi = static_cast<float> (kPi * 0.5);
         const float step = halfPi / static_cast<float> (fadeSamples);
+        // 有声か無声かは、時刻に一番近いフレームで決める。フレームは hop ごとにしか変わらないので、
+        // 次のフレームとの真ん中に届くまでは求め直さない（真ん中より手前なら、一番近いフレームは同じ）
+        bool voiced = false;
+        int64_t recheckAt = o;
         for (int i = 0; i < len; ++i)
         {
             const int64_t t = o + i;
-            const bool voiced = frameAt (static_cast<double> (t)).voiced;
+            if (t >= recheckAt)
+            {
+                const Frame& f = frameAt (static_cast<double> (t));
+                voiced = f.voiced;
+                updateEqTargets (f);
+                const int64_t j = nearestFrame (static_cast<double> (t));
+                recheckAt = std::max (t + 1, static_cast<int64_t> (std::ceil (0.5 * (frameCentre (j) + frameCentre (j + 1)))));
+            }
             theta = voiced ? std::min (halfPi, theta + step) : std::max (0.0f, theta - step);
             float& v = accVoiced[static_cast<size_t> (t & accMask)];
             float& u = accUnvoiced[static_cast<size_t> (t & accMask)];
+            v = eqVoiced.process (v);
+            u = eqUnvoiced.process (u);
             if (streamLog != nullptr)
                 streamLog->push_back ({ v, u, theta });
             // つなぎ終わった所は、重みをちょうど 1 と 0 にする（無声の断片を作らなかった所に、前の断片の裾を混ぜない）

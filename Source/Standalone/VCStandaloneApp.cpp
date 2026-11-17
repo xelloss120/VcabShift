@@ -88,10 +88,15 @@ public:
             pluginHolder = createPluginHolder();
             return;
         }
-        // 画面の「オーディオ設定」ボタンから設定画面を開けるようにする（画面は窓を作るときに作られるので、その前に入れる）
+        // 画面の「オーディオ設定」ボタンから設定画面を開けるようにする（画面は窓を作るときに作られるので、その前に入れる）。
+        // 「オプション」の「初期値に戻す」はプラグインを作り直すので、そのときも入れ直す（入れ直さないと、ボタンが出なくなる）
         auto holder = createPluginHolder();
-        if (auto* p = dynamic_cast<VcabShiftProcessor*> (holder->processor.get()))
-            p->openAudioSettings = [h = holder.get()] { h->showAudioSettingsDialog(); };
+        holder->onPluginCreated = [h = holder.get()] (AudioProcessor& created)
+        {
+            if (auto* p = dynamic_cast<VcabShiftProcessor*> (&created))
+                p->openAudioSettings = [h] { h->showAudioSettingsDialog(); };
+        };
+        holder->onPluginCreated (*holder->processor);
         mainWindow = std::make_unique<VCStandaloneFilterWindow> (getApplicationName(),
                                                                  lookAndFeel.findColour (ResizableWindow::backgroundColourId),
                                                                  std::move (holder));

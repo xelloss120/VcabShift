@@ -25,10 +25,8 @@ private:
         juce::Label label;
         std::unique_ptr<juce::Slider> slider;
         std::unique_ptr<juce::ComboBox> combo;
-        std::unique_ptr<juce::ToggleButton> toggle;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sliderAttachment;
         std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> comboAttachment;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> toggleAttachment;
     };
 
     VcabShiftProcessor& proc;

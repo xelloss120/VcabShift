@@ -5,6 +5,7 @@
 //  - 決め打ちの英語の文字を日本語にした（翻訳の仕組みで変えられる文字は VCStandaloneApp.cpp の翻訳の表で日本語にしている）
 //  - 設定画面に MIDI の項目を出さないようにした（ボイチェンは MIDI を使わないため）
 //  - 初回起動の入力の消音をオフにした（ヘッドフォンで使う前提）
+//  - プラグインを作り直したとき（「初期値に戻す」）に呼ぶ onPluginCreated を足した（画面の「オーディオ設定」ボタンをつなぎ直すため）
 // JUCE を更新するときは、元のファイルとの差分を確かめて取り込み直す。
 
 /*
@@ -149,7 +150,14 @@ public:
     virtual void createPlugin()
     {
         handleCreatePlugin();
+
+        // VcabShift: 作り直したプラグイン（「初期値に戻す」）にも、外枠とのつなぎを入れ直せるようにする
+        if (onPluginCreated != nullptr && processor != nullptr)
+            onPluginCreated (*processor);
     }
+
+    // VcabShift: プラグインを作り直したときに呼ぶ（最初の 1 回はコンストラクターの中で作るので、呼ばれない）
+    std::function<void (AudioProcessor&)> onPluginCreated;
 
     virtual void deletePlugin()
     {

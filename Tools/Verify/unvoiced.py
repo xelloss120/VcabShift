@@ -11,8 +11,8 @@ from scipy.ndimage import binary_erosion, maximum_filter1d, uniform_filter1d
 import common as C
 
 BANDS = ((2000, 4000), (4000, 8000), (8000, 12000), (12000, 16000), (16000, 20000))
-SETTINGS = (('入力', None), ('無声フォルマント 0', ('unvoiced_formant=0',)), ('無声フォルマント +3（初期値）', ()),
-            ('無声フォルマント +6', ('unvoiced_formant=6',)), ('無声F4以降 地声合わせ', ('unvoiced_above_f4=2',)))
+SETTINGS = (('入力', None), ('無声フォルマント 0', ('unvoiced_formant=0',)), ('無声フォルマント +3', ('unvoiced_formant=3',)),
+            ('無声フォルマント +6（初期値）', ()), ('無声F4以降 地声合わせ', ('unvoiced_above_f4=2',)))
 
 
 def masks(inp, x, fs):

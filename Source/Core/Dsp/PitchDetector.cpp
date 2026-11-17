@@ -73,7 +73,7 @@ void PitchDetector::prepare (float sampleRate, float lowestMin, float highestMax
     cand.assign (static_cast<size_t> ((lag + 1) * kMaxCandidates), {});
     candCount.assign (static_cast<size_t> (lag + 1), 0);
 
-    configure (80.0f, 400.0f);
+    configure (lowestMin, highestMax); // 使う側が configure で探す範囲を決めるまでの、仮の範囲
 }
 
 void PitchDetector::configure (float fmin, float fmax)
@@ -177,6 +177,33 @@ void PitchDetector::observe (const float* x, float cueUp, float cueDown, Candida
             rest += thresholdWeight[static_cast<size_t> (i)];
         tauProb[static_cast<size_t> (globalMin)] += rest * kAbsentWeight;
         deepest = cmnd[static_cast<size_t> (globalMin)];
+
+        // 1 周期目の優先（本来の pYIN にはない）: 長い周期から順に、半分の周期の近くに深さの近い谷があれば、確率をそちらへ移す
+        // （4 倍 → 2 倍 → 1 倍のように続けて移る）
+        if (firstMargin > 0.0f)
+            for (int t = tauMax; t >= 2 * tauMin; --t)
+            {
+                const float p = tauProb[static_cast<size_t> (t)];
+                if (p <= 0.0f)
+                    continue;
+                const float half = 0.5f * refineTau (t);
+                const int tol = std::max (1, static_cast<int> (std::ceil (0.05f * half)));
+                const int lo = std::max (tauMin, static_cast<int> (std::floor (half)) - tol);
+                const int hi = std::min (t - 1, static_cast<int> (std::ceil (half)) + tol);
+                int j = -1;
+                for (int k = lo; k <= hi; ++k)
+                    if (j < 0 || cmnd[static_cast<size_t> (k)] < cmnd[static_cast<size_t> (j)])
+                        j = k;
+                // 谷であること（両隣より低い。lo ≥ tauMin ≥ 2、hi ≤ t − 1 なので両隣は範囲の中）
+                if (j < 0 || cmnd[static_cast<size_t> (j - 1)] < cmnd[static_cast<size_t> (j)] || cmnd[static_cast<size_t> (j + 1)] < cmnd[static_cast<size_t> (j)])
+                    continue;
+                const float v = cmnd[static_cast<size_t> (j)];
+                if (v < firstLimit && v - cmnd[static_cast<size_t> (t)] < firstMargin)
+                {
+                    tauProb[static_cast<size_t> (j)] += p;
+                    tauProb[static_cast<size_t> (t)] = 0.0f;
+                }
+            }
 
         for (int t = tauMin; t <= tauMax; ++t)
         {

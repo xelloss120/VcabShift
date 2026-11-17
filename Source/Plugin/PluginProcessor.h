@@ -5,6 +5,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
+#include <atomic>
 #include <functional>
 
 // 画面のスペクトル用に、音の処理のスレッドから音を渡す輪（書き手 1、読み手 1。ロックしない）
@@ -38,15 +39,19 @@ private:
     std::array<float, kSize> buffer {};
 };
 
-class VcabShiftProcessor : public juce::AudioProcessor
+class VcabShiftProcessor : public juce::AudioProcessor,
+                           private juce::Timer
 {
 public:
     VcabShiftProcessor();
+    ~VcabShiftProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    // ホストのバイパス: 入力を、報告している遅延の分だけ遅らせて出す（遅らせないと、ホストの遅延の補正の分だけ早く出る）
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -80,11 +85,23 @@ public:
     // EXE 版だけ、外枠が入れる。音声の設定画面を開く（VST3 では空のまま）
     std::function<void()> openAudioSettings;
 
+    // グラフに出している点（false: フォルマント、true: EQ）。画面を閉じて開き直しても保つ（保存はしない）
+    bool eqView = false;
+
 private:
     juce::AudioProcessorValueTreeState apvts;
     std::array<juce::RangedAudioParameter*, vcab::kNumParams> params {};
     vcab::Engine engine;
     std::vector<float> monoOut, delayedIn;
+
+    // バイパス用に、入力をチャンネルごとに溜める輪（バイパスしていない間も溜めて、切り替えた直後から遅らせた音を出せるようにする）
+    std::array<std::vector<float>, 2> dryRing;
+    int64_t dryPos = 0, dryMask = 0;
+    // 処理の今の遅延。ホストへの報告（setLatencySamples）は、画面のスレッドのタイマーで行う
+    std::atomic<int> engineLatency { 0 };
+
+    void run (juce::AudioBuffer<float>&, bool bypassed);
+    void timerCallback() override;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 

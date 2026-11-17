@@ -19,6 +19,8 @@ enum class P : int
     aboveF4,
     uf1Delta, uf2Delta, uf3Delta, uf4Delta,
     unvoicedAboveF4,
+    eqF0, eqF1, eqF2, eqF3, eqF4,
+    eqUf1, eqUf2, eqUf3, eqUf4,
     pitchMin,
     pitchMax,
     inputChannel,
@@ -27,7 +29,7 @@ enum class P : int
 
 constexpr int kNumParams = static_cast<int> (P::count);
 
-enum class ParamType { real, integer, choice, toggle };
+enum class ParamType { real, choice };
 
 struct ParamInfo
 {
@@ -61,18 +63,22 @@ constexpr std::array<FormantRange, 4> kFormantRanges { { { 180.0f, 1100.0f, 500.
                                                          { 2500.0f, 5000.0f, 3500.0f } } };
 constexpr float kMinAnchorRatio = 1.15f; // 目印どうしを離す倍率
 
-// 処理に渡す設定（パラメータの値を型の付いた形にしたもの）
+// 処理に渡す設定（パラメータの値を型の付いた形にしたもの）。
+// ここの初期値は、fromValues で上書きするまでの仮の値（表の初期値と同じにしておく。Params.cpp の assert で確かめている）
 struct Settings
 {
     float pitch = 12.0f;   // 半音
     float formant = 6.0f;  // 半音
-    float unvoicedFormant = 3.0f; // 無声音の分（半音。有声音のフォルマントのつまみの代わりに使う）
+    float unvoicedFormant = 6.0f; // 無声音の分（半音。有声音のフォルマントのつまみの代わりに使う）
     std::array<float, 4> unvoicedDelta { 0.0f, 0.0f, 0.0f, 0.0f }; // 無声音の F1〜F4 の差（半音。位置は有声と同じ）
-    AboveF4 unvoicedAboveF4 = AboveF4::followUniform;
+    AboveF4 unvoicedAboveF4 = AboveF4::followF4;
     WarpMode warpMode = WarpMode::formants;
     std::array<float, 4> delta { 0.0f, 0.0f, 0.0f, 0.0f };          // 半音
     std::array<float, 4> anchor { 500.0f, 1400.0f, 2700.0f, 3500.0f }; // Hz
-    AboveF4 aboveF4 = AboveF4::followUniform;
+    AboveF4 aboveF4 = AboveF4::followF4;
+    // 声に追従する EQ（dB）。有声は 基音・F1〜F4、無声は F1〜F4（位置はどれも動かした後）
+    std::array<float, 5> eq { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, 4> unvoicedEq { 0.0f, 0.0f, 0.0f, 0.0f };
     float pitchMin = 80.0f; // Hz
     float pitchMax = 600.0f;
     InputChannel inputChannel = InputChannel::automatic;
