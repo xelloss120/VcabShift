@@ -72,6 +72,7 @@ void SpectrumView::setEqView (bool on)
     const char* body = on
         ? "桃の線と丸: 有声音にかける EQ（右の目盛り、dB）。丸は左から、基音（出力の声の高さ）と、動かした後の F1〜F4 の山の所です。\n"
           "位置は声に合わせて左右に動き、上下にドラッグして持ち上げ（下げ）ます。幅は基音が 2/3 オクターブ、F1〜F4 が 1 オクターブです。\n"
+          "両端の点（有声の基音と F4、無声の F1 と F4）は、下げるときだけ棚形になり、外側（基音・F1 は下、F4 は上）もまとめて下げます。\n"
           "緑の線とひし形: 無声音（さ行・は行などの息の音）にかける EQ。位置は無声音の F1〜F4 を動かした後（重ならないよう少し右に描いています）。\n"
           "白抜きの点: 声の高さや F1〜F4 を追いかけられていない（前の位置、または決まった位置のまま）。\n"
           "ホイールで 0.5dB ずつ。ダブルクリックで 0 に戻します。\n"
@@ -436,7 +437,7 @@ void SpectrumView::paint (juce::Graphics& g)
         }
         return path;
     };
-    // EQ の線: ベル形を足し合わせた大きさ
+    // EQ の線: ベル形（両端の点を下げるときは棚形）を足し合わせた大きさ
     auto eqPath = [&] (bool voiced)
     {
         juce::Path path;
@@ -446,13 +447,15 @@ void SpectrumView::paint (juce::Graphics& g)
             float db = 0.0f;
             if (voiced)
             {
-                db += vcab::eqBellDb (f, pointHz (0), settings.eq[0], vcab::kEqBandwidthF0, fs);
+                db += vcab::eqBandDb (f, pointHz (0), settings.eq[0], vcab::kEqBandwidthF0, vcab::kEqShelfVoiced[0], fs);
                 for (int k = 0; k < 4; ++k)
-                    db += vcab::eqBellDb (f, eqCentreV[static_cast<size_t> (k)], settings.eq[static_cast<size_t> (k + 1)], vcab::kEqBandwidthFormant, fs);
+                    db += vcab::eqBandDb (f, eqCentreV[static_cast<size_t> (k)], settings.eq[static_cast<size_t> (k + 1)], vcab::kEqBandwidthFormant,
+                                         vcab::kEqShelfVoiced[static_cast<size_t> (k + 1)], fs);
             }
             else
                 for (int k = 0; k < 4; ++k)
-                    db += vcab::eqBellDb (f, eqCentreU[static_cast<size_t> (k)], settings.unvoicedEq[static_cast<size_t> (k)], vcab::kEqBandwidthFormant, fs);
+                    db += vcab::eqBandDb (f, eqCentreU[static_cast<size_t> (k)], settings.unvoicedEq[static_cast<size_t> (k)], vcab::kEqBandwidthFormant,
+                                         vcab::kEqShelfUnvoiced[static_cast<size_t> (k)], fs);
             const float y = yForShift (juce::jlimit (-kShiftRange, kShiftRange, db));
             if (x == a.getX())
                 path.startNewSubPath (x, y);

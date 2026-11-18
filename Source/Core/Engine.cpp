@@ -86,8 +86,8 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     grainOut.assign (static_cast<size_t> (2 * maxHalfOut + 1), 0.0f);
     corr.assign (static_cast<size_t> (4 * tMaxAbs + 8), 0.0f);
     mono.assign (static_cast<size_t> (std::max (1, maxBlockSize)), 0.0f);
-    eqVoiced.prepare (fs, 5, { kEqBandwidthF0, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant });
-    eqUnvoiced.prepare (fs, 4, { kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant });
+    eqVoiced.prepare (fs, 5, { kEqBandwidthF0, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant }, kEqShelfVoiced);
+    eqUnvoiced.prepare (fs, 4, { kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant, kEqBandwidthFormant }, kEqShelfUnvoiced);
 
     configured = false;
     configure();
@@ -140,6 +140,7 @@ void Engine::configure()
     nextUnvoiced = static_cast<double> (outPos);
     theta = 0.0f;
     voicedRun = false;
+    tailMark = Mark {};
     for (auto& w : warps)
         w.valid = false;
     grain.forgetEnvelope();
@@ -562,6 +563,15 @@ bool Engine::voicedThroughout (int64_t from, int64_t to, int64_t availInPos) con
     return frameAt (static_cast<double> (to), availInPos).voiced;
 }
 
+bool Engine::anyVoiced (int64_t from, int64_t to, int64_t availInPos) const
+{
+    const int64_t step = std::max (1, hop / 2);
+    for (int64_t t = from; t < to; t += step)
+        if (frameAt (static_cast<double> (t), availInPos).voiced)
+            return true;
+    return frameAt (static_cast<double> (to), availInPos).voiced;
+}
+
 bool Engine::makeGrain (int64_t centreIn, float halfIn, int halfOut, float ratio, const WarpMap* correction, int lifter, int stream, bool powerWindow)
 {
     const int hi = static_cast<int> (std::ceil (halfIn));
@@ -653,6 +663,7 @@ bool Engine::startVoicedRun (int64_t o, double p)
     markCursor = i;
     nextVoiced = first + step;
     voicedRun = true;
+    tailMark = m;
     return true;
 }
 
@@ -683,6 +694,32 @@ void Engine::synthesize (int64_t o, int64_t e)
             ++markCursor;
         }
         const Mark m = markAt (markCursor);
+        if (! m.voiced && voicedRun && tailMark.voiced && tailMark.period > 0.0f)
+        {
+            // 声の終わり: 有声から無声へのつなぎ（10ms）は、出力のフレームが無声になった時刻から始まるが、有声の流れは
+            // 元の印が無声になった所で断片が尽き、つなぎの途中で空になっていた（録音した声で、つなぎの始まりから約 2〜5ms で
+            // 10dB 下がり、出力が 5dB ほどへこんでいた）。そこで、最後の有声の印から同じ周期で仮の印を延ばし、その位置の
+            // 入力から断片を作って、つなぎが終わるまで置く（同じ断片の繰り返しではないので、大きさは入力の減り方に従う）。
+            // 断片の書き始めより前のつなぎの長さの間に有声のフレームがあれば、その断片の所ではまだつなぎの途中
+            const VoicedShape probe = voicedShape (tailMark, frameAt (static_cast<double> (tailMark.t), avail));
+            const int64_t c = static_cast<int64_t> (std::floor (nextVoiced));
+            if (anyVoiced (c - probe.halfOut - fadeSamples, c - probe.halfOut, avail))
+            {
+                const double k = std::floor ((nextVoiced - static_cast<double> (tailMark.t)) / tailMark.period);
+                Mark vm = tailMark;
+                vm.t = tailMark.t + static_cast<int64_t> (std::llround (std::max (0.0, k) * tailMark.period));
+                const VoicedShape shape = voicedShape (vm, frameAt (static_cast<double> (vm.t), avail));
+                if (nextVoiced - shape.halfOut >= static_cast<double> (e))
+                    break;
+                if (! makeVoicedGrain (vm, shape))
+                    break;
+                writeGrain (accVoiced, nextVoiced, shape.halfOut, o);
+                if (grainLog != nullptr)
+                    grainLog->push_back ({ nextVoiced, static_cast<double> (vm.t), vm.period, 1.0 });
+                nextVoiced += vm.period / p;
+                continue;
+            }
+        }
         if (! m.voiced || ! voicedRun)
         {
             // 次に有声の断片が来ても、その書き始め（nextVoiced − 周期の上限）が次のブロックより前にならない所で止める
@@ -701,6 +738,7 @@ void Engine::synthesize (int64_t o, int64_t e)
         if (grainLog != nullptr)
             grainLog->push_back ({ nextVoiced, static_cast<double> (m.t), m.period, 0.0 });
         nextVoiced += m.period / p;
+        tailMark = m;
     }
 
     // 無声の流れ: 一定の間隔 U で、伸縮後の長さを ±U にそろえる（重なりの和が一定）

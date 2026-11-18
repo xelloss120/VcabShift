@@ -204,6 +204,9 @@ private:
     int64_t nearestFrame (double t) const;     // 時刻 t に一番近いフレームの番号（frameAt が使うもの）
     int64_t inPosWhenKnown (double t) const;   // 時刻 t のフレームが決まる入力の時刻
     bool voicedThroughout (int64_t from, int64_t to, int64_t availInPos) const;
+    bool anyVoiced (int64_t from, int64_t to, int64_t availInPos) const;
+    // 声の終わりのつなぎで、有声の流れを延ばすときの元の印（最後に断片を作った有声の印）
+    Mark tailMark {};
     float ratioFor (const Frame& f, int stream); // stream: 0 = 有声、1 = 無声
     const WarpMap* correctionFor (int stream) const { return warps[static_cast<size_t> (stream)].map.isUniform() ? nullptr : &warps[static_cast<size_t> (stream)].map; }
 

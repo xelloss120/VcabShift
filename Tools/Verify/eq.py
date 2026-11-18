@@ -1,5 +1,6 @@
 # 声に追従する EQ の確かめ。
-#   1. 合成の母音（120Hz、5 母音）で、EQ をかけた出力とかけない出力の倍音ごとの比が、狙いの線（ベル形の足し合わせ）と合うか
+#   1. 合成の母音（120Hz、5 母音）で、EQ をかけた出力とかけない出力の倍音ごとの比が、狙いの線（ベル形の足し合わせ。
+#      両端の点（有声の基音と F4、無声の F1 と F4）を下げるときは棚形）と合うか
 #      （中心は、基音が出力の高さ、F1〜F4 が母音の F1〜F4 を有声フォルマントの分だけ動かした所。追いかけの誤差の分はずれる）
 #   2. 雑音（摩擦音のつもり）で、無声の EQ が無声の F1〜F4 の所に効き、有声の EQ が効かないか
 #   3. ブロックの大きさ（1・64・4096）で出力が変わらないか（EQ をかけたまま）
@@ -28,6 +29,26 @@ def bell_db(f, fc, g, bw):
     q = 1 / (2 * np.sinh(np.log(2) / 2 * bw))
     re = 1 - w * w
     return 10 * np.log10((re * re + (a / q * w) ** 2) / (re * re + (w / (a * q)) ** 2))
+
+
+SHELF_Q = 0.8
+
+
+def band_db(f, fc, g, bw, shelf=None):
+    """FollowEq の eqBandDb と同じ式。shelf が 'low' / 'high' で量が負なら棚形（折れ目は中心から内側へ幅の半分）"""
+    if g >= 0 or shelf is None:
+        return bell_db(f, fc, g, bw)
+    corner = min(fc, 0.45 * FS) * 2 ** (bw / 2 if shelf == 'low' else -bw / 2)
+    w = np.tan(np.pi * np.minimum(f, 0.4999 * FS) / FS) / np.tan(np.pi * min(corner, 0.45 * FS) / FS)
+    a = 10 ** (g / 40)
+    mid = a * w * w / SHELF_Q ** 2
+    p = (a - w * w) ** 2 + mid
+    r = (1 - a * w * w) ** 2 + mid
+    return 10 * np.log10(a * a * (p / r if shelf == 'low' else r / p))
+
+
+VOICED_SHELF = ('low', None, None, None, 'high')   # 基音、F1〜F4
+UNVOICED_SHELF = ('low', None, None, 'high')       # 無声 F1〜F4
 
 
 def spectrum(y, lo, hi):
@@ -75,6 +96,9 @@ def check_voiced():
         'F2 +6': ['eq_f2=6'],
         'F3 -6': ['eq_f3=-6'],
         'F4 +6': ['eq_f4=6'],
+        '基音 -6（棚形）': ['eq_f0=-6'],
+        'F4 -6（棚形）': ['eq_f4=-6'],
+        'F1 -6（ベル形のまま）': ['eq_f1=-6'],
         '全部 +6（無声 F1〜F4 も +6）': ['eq_f0=6', 'eq_f1=6', 'eq_f2=6', 'eq_f3=6', 'eq_f4=6',
                                       'eq_uf1=6', 'eq_uf2=6', 'eq_uf3=6', 'eq_uf4=6'],
     }
@@ -85,21 +109,24 @@ def check_voiced():
         render(inp, out, BASE + st)
         _, ye = read(out)
         gains = {k.split('=')[0]: float(k.split('=')[1]) for k in st}
-        errs, f0gain, peak = [], [], []
+        errs, f0gain, peak, hi_want, hi_got = [], [], [], [], []
         for v, lo, hi in spans:
             kmax = int(5000 // f0)
             g = harmonic_gain(yb, ye, lo, hi, f0, kmax)
             fk = f0 * np.arange(1, kmax + 1)
-            want = bell_db(fk, f0, gains.get('eq_f0', 0), 2 / 3)
+            want = band_db(fk, f0, gains.get('eq_f0', 0), 2 / 3, VOICED_SHELF[0])
             for k in range(4):
                 fc = VOWELS[v][k] * 2 ** (FORMANT / 12)
-                want = want + bell_db(fk, fc, gains.get(f'eq_f{k + 1}', 0), 1.0)
+                want = want + band_db(fk, fc, gains.get(f'eq_f{k + 1}', 0), 1.0, VOICED_SHELF[k + 1])
             errs.append(g - want)
             f0gain.append(g[0])
+            hi_want.append(want[-1])
+            hi_got.append(g[-1])
             peak.append(np.max(np.abs(g)))
         e = np.concatenate(errs)
         print(f'   {name:24s} 差の中央値 {np.median(np.abs(e)):.2f}dB、90% 点 {np.percentile(np.abs(e), 90):.2f}dB'
-              f'、基音の倍音の比 {np.mean(f0gain):+.2f}dB（母音ごと {" ".join(f"{a:+.1f}" for a in f0gain)}）')
+              f'、基音の倍音の比 {np.mean(f0gain):+.2f}dB（母音ごと {" ".join(f"{a:+.1f}" for a in f0gain)}）'
+              f'、一番上の倍音 {np.mean(hi_got):+.2f}dB（狙い {np.mean(hi_want):+.2f}）')
     print(f'   EQ なしの出力と 0dB の EQ: 一致は regress.py check で確かめる')
 
 
@@ -118,17 +145,21 @@ def check_unvoiced():
     _, yb = read(base)
     print('2. 雑音（1kHz より上）。帯域ごとの比（EQ あり / なし、dB）。無声の F1〜F4 は追いかけられないので決まった位置 × 無声フォルマント')
     centres = [f * 2 ** (UFORMANT / 12) for f in FIXED]
-    for name, st in {'無声 F3 +6': ['eq_uf3=6'], '無声 F4 -6': ['eq_uf4=-6'], '有声 全部 +6': ['eq_f0=6', 'eq_f1=6', 'eq_f2=6', 'eq_f3=6', 'eq_f4=6']}.items():
+    cases = {'無声 F3 +6': ['eq_uf3=6'], '無声 F4 +6': ['eq_uf4=6'], '無声 F4 -6（棚形）': ['eq_uf4=-6'], '無声 F1 -6（棚形）': ['eq_uf1=-6'],
+             '有声 全部 +6': ['eq_f0=6', 'eq_f1=6', 'eq_f2=6', 'eq_f3=6', 'eq_f4=6']}
+    for name, st in cases.items():
         out = path('eq_nx.wav')
         render(inp, out, BASE + st)
         _, ye = read(out)
         pb, n = spectrum(yb, lo, hi)
         pe, _ = spectrum(ye, lo, hi)
         row = []
-        for fc in [centres[1], centres[2], centres[3], 8000.0]:
+        gains = {k.split('=')[0]: float(k.split('=')[1]) for k in st}
+        for fc in [1200.0, centres[1], centres[2], centres[3], 8000.0, 12000.0]:
             s = slice(int(fc / 2 ** (1 / 12) * n / FS), int(fc * 2 ** (1 / 12) * n / FS))
-            row.append(f'{fc:.0f}Hz {10 * np.log10(pe[s].sum() / pb[s].sum()):+.1f}')
-        print(f'   {name:12s} ' + '、'.join(row))
+            want = sum(band_db(np.array([fc]), centres[k], gains.get(f'eq_uf{k + 1}', 0), 1.0, UNVOICED_SHELF[k])[0] for k in range(4))
+            row.append(f'{fc:.0f}Hz {10 * np.log10(pe[s].sum() / pb[s].sum()):+.1f}（狙い {want:+.1f}）')
+        print(f'   {name:16s} ' + '、'.join(row))
 
 
 def check_blocks():
@@ -214,7 +245,7 @@ def check_follow(voice):
         if not is_on:
             g2.append(b)
     g1, g2, on = np.array(g1), np.array(g2), np.array(on)
-    want2 = bell_db(np.array([2.0]), 1.0, 6, 2 / 3)[0]
+    want2 = band_db(np.array([2.0]), 1.0, 6, 2 / 3, VOICED_SHELF[0])[0]
     print(f'   基音 +6: 正解の基音の倍音の比 中央値 {np.median(g1):+.2f}dB、±1dB 以内 {np.mean(np.abs(g1 - 6) <= 1) * 100:.1f}%、'
           f'±2dB 以内 {np.mean(np.abs(g1 - 6) <= 2) * 100:.1f}%、10% 点 {np.percentile(g1, 10):+.2f}dB')
     print(f'            2 倍音の比 中央値 {np.median(g2):+.2f}dB（狙いの線では {want2:+.2f}dB）')

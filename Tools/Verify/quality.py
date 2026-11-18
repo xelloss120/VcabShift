@@ -398,7 +398,7 @@ def pitch(exes, reps):
                 x = x + noise(len(x), rng, 50) * 10 ** (-45 / 20) * 0.5
                 i = C.path('pe_in.wav'); g = C.path('pe_g.csv'); C.write(i, x)
                 subprocess.run([exe, i, C.path('pe_out.wav'), '--align', '--grains', g], check=True, capture_output=True)
-                for to, ts, P in C.load_csv(g):
+                for to, ts, P, *_ in C.load_csv(g):
                     to, ts = int(to), int(ts)
                     if P <= 0 or not (0 <= ts < len(x) and 0 <= to < len(x)) or kind[ts] != 'V' or tr[ts] <= 0:
                         continue

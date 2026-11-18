@@ -274,9 +274,9 @@ static int run (int argc, char** argv)
     if (! grainsPath.empty())
     {
         std::ofstream gl (grainsPath);
-        gl << "out,src,period" << std::endl;
+        gl << "out,src,period,tail" << std::endl;
         for (const auto& r : grainLog)
-            gl << static_cast<int64_t> (r[0]) << "," << static_cast<int64_t> (r[1]) << "," << r[2] << std::endl;
+            gl << static_cast<int64_t> (r[0]) << "," << static_cast<int64_t> (r[1]) << "," << r[2] << "," << r[3] << std::endl;
     }
 
     std::printf ("latency %d samples (%.2f ms), cpu %.2f%% of realtime\n", latency, latency * 1000.0 / fs, 100.0 * secs / (len / fs));
