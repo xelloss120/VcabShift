@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VcabShift VERSION 1.2.1 LANGUAGES C CXX)
+project(VcabShift VERSION 1.2.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,9 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/JUCE/CMakeLists.txt")
+    message(FATAL_ERROR "JUCE のサブモジュールがありません。git submodule update --init を実行してください。")
+endif()
 add_subdirectory(external/JUCE)
 
 # ---- 処理の部品（JUCE に依存しない） ----

@@ -60,7 +60,8 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    // 入力が止まった後も、最後の断片と追従 EQ（IIR）の余韻が少し残る（遅延の分は別に報告している）
+    double getTailLengthSeconds() const override { return 0.1; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }

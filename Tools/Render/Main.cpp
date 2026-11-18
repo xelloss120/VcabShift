@@ -2,7 +2,8 @@
 //   vcabsh_render 入力.wav 出力.wav [キー=値 ...] [--align] [--track 出力.csv]
 // キーは Params.cpp の key（例: pitch=12 formant=6 warp_mode=2）。
 // --align: 遅延の分を詰めて、入力と時刻をそろえる。
-// --track: 5ms ごとの声の高さと F1〜F4 を CSV に書く（遅延の分を詰めた時刻）。
+// キーの値は、表の範囲（プラグインのつまみの範囲）に収める（収めたときは知らせる）。
+// --track: 5ms ごとの声の高さと F1〜F4 を CSV に書く（時刻はその状態を読んだ時点の入力の新しい端。遅延の分は詰めない）。
 // --block: 1 回に処理する標本の数（初期値 256。リアルタイムの環境の違いを試すため）。
 // --marks: 置いた有声の印ごとの { 時刻（標本、入力の時刻）, 周期, 有声, 相互相関の値 } を CSV に書く。
 // --frames: 決まったフレームごとの { 窓の中心の時刻（秒、入力の時刻）, 有声, 高さ } を CSV に書く。
@@ -15,8 +16,28 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
+
+static int run (int argc, char** argv);
+
+// 数の読めない引数（std::stoi / std::stof の例外）は、使い方を出して終える
+static int runChecked (int argc, char** argv)
+{
+    try
+    {
+        return run (argc, argv);
+    }
+    catch (const std::logic_error& e)
+    {
+        std::printf ("bad argument (%s)\n", e.what());
+        std::printf ("usage: vcabsh_render in.wav out.wav [key=value ...] [--align] [--track out.csv] [--block n]\n");
+        return 1;
+    }
+}
 
 static int run (int argc, char** argv)
 {
@@ -101,7 +122,12 @@ static int run (int argc, char** argv)
             for (const auto& p : vcab::paramTable())
                 if (a.substr (0, eq) == p.key)
                 {
-                    values[static_cast<size_t> (p.id)] = std::stof (a.substr (eq + 1));
+                    const float v = std::stof (a.substr (eq + 1));
+                    // NaN と範囲の外は、プラグインと同じく表の範囲に収める（エンジンはこの範囲の値しか受け取らない前提）
+                    const float c = std::isnan (v) ? p.defaultValue : std::clamp (v, p.minValue, p.maxValue);
+                    if (! (c == v))
+                        std::printf ("note: %s=%g is outside %g..%g, using %g\n", p.key, v, p.minValue, p.maxValue, c);
+                    values[static_cast<size_t> (p.id)] = c;
                     ok = true;
                 }
         if (! ok)
@@ -118,6 +144,11 @@ static int run (int argc, char** argv)
     if (reader == nullptr)
     {
         std::printf ("cannot read %s\n", argv[1]);
+        return 1;
+    }
+    if (reader->lengthInSamples > std::numeric_limits<int>::max() - 1000000)
+    {
+        std::printf ("too long: %s\n", argv[1]);
         return 1;
     }
     const int numCh = static_cast<int> (reader->numChannels);
@@ -212,20 +243,29 @@ static int run (int argc, char** argv)
     }
     const double secs = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
 
+    // 一時ファイルに書いてから置き換える（書けなかったときに、前の出力を消してしまわないように）
     const juce::File outFile { juce::String (juce::CharPointer_UTF8 (argv[2])) };
-    outFile.deleteFile();
     juce::WavAudioFormat wav;
-    std::unique_ptr<juce::OutputStream> stream = outFile.createOutputStream();
-    const auto options = juce::AudioFormatWriterOptions {}.withSampleRate (fs).withNumChannels (1).withBitsPerSample (24);
-    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream, options));
-    if (writer == nullptr)
     {
-        std::printf ("cannot write %s\n", argv[2]);
-        return 1;
+        juce::TemporaryFile tmpOut (outFile);
+        bool written = false;
+        {
+            std::unique_ptr<juce::OutputStream> stream = tmpOut.getFile().createOutputStream();
+            const auto options = juce::AudioFormatWriterOptions {}.withSampleRate (fs).withNumChannels (1).withBitsPerSample (24);
+            std::unique_ptr<juce::AudioFormatWriter> writer (stream != nullptr ? wav.createWriterFor (stream, options) : nullptr);
+            if (writer != nullptr)
+            {
+                const float* p = out.data() + (align ? latency : 0);
+                const int outLen = align ? len : total;
+                written = writer->writeFromFloatArrays (&p, 1, outLen);
+            }
+        }
+        if (! written || ! tmpOut.overwriteTargetFileWithTemporary())
+        {
+            std::printf ("cannot write %s\n", argv[2]);
+            return 1;
+        }
     }
-    const float* p = out.data() + (align ? latency : 0);
-    const int outLen = align ? len : total;
-    writer->writeFromFloatArrays (&p, 1, outLen);
 
     if (! backfillPath.empty())
     {
@@ -309,11 +349,11 @@ int wmain (int argc, wchar_t** wargv)
     std::vector<char*> ptrs;
     for (auto& a : args)
         ptrs.push_back (a.data());
-    return run (argc, ptrs.data());
+    return runChecked (argc, ptrs.data());
 }
 #else
 int main (int argc, char** argv)
 {
-    return run (argc, argv);
+    return runChecked (argc, argv);
 }
 #endif

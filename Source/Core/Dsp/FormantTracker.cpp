@@ -52,6 +52,7 @@ void FormantTracker::reset (const std::array<float, 4>& anchors)
         missing[static_cast<size_t> (i)] = std::numeric_limits<int>::max() / 2;
         lastRaw[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
         jumpCount[static_cast<size_t> (i)] = 0;
+        pendingRaw[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
         glideFrom[static_cast<size_t> (i)] = anchors[static_cast<size_t> (i)];
         prevTracked[static_cast<size_t> (i)] = false;
     }
@@ -274,10 +275,13 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
             continue;
         }
 
-        // 飛び止め: 追いかけている途中で前のフレームから大きく跳んだら、次のフレームも同じなら受け入れる（それまでは前の値を保つ）
-        if (tracked && prevTracked[uk] && std::abs (std::log2 (target / lastRaw[uk])) * 12.0 >= kJumpSemitones && jumpCount[uk] < 1)
+        // 飛び止め: 追いかけている途中で前のフレームから大きく跳んだら、次のフレームも同じ所（保留した値から
+        // kJumpSemitones 未満）なら受け入れる（それまでは前の値を保つ）。違う所へ跳んだら、それを新しく保留する
+        if (tracked && prevTracked[uk] && std::abs (std::log2 (target / lastRaw[uk])) * 12.0 >= kJumpSemitones
+            && ! (jumpCount[uk] > 0 && std::abs (std::log2 (target / pendingRaw[uk])) * 12.0 < kJumpSemitones))
         {
-            ++jumpCount[uk];
+            jumpCount[uk] = 1;
+            pendingRaw[uk] = target;
             out.tracked[uk] = true;
             continue;
         }
@@ -294,7 +298,8 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
         }
         else
         {
-            ++missing[uk];
+            jumpCount[uk] = 0; // 追いかけられないフレームを挟んだら、保留した値は捨てる
+            missing[uk] = std::min (missing[uk] + 1, holdFrames + glideFrames + 1); // 戻りきった後は数え続けない（あふれ防止）
             if (missing[uk] == holdFrames + 1)
                 glideFrom[uk] = value[uk];
             if (missing[uk] > holdFrames)

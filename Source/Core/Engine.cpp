@@ -57,7 +57,8 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     }
     for (auto& c : lowpass)
         c = static_cast<float> (c / sum);
-    const int64_t dr = Fft::nextPow2 (static_cast<int> (fsd * 1.0));
+    // xRing と同じく、1 秒に 1 ブロックの分を足す（足さないと、約 1 秒を超えるブロックで、フレームを作る前に落とした音が上書きされる）
+    const int64_t dr = Fft::nextPow2 (static_cast<int> (fsd * 1.0) + maxBlockSize / decim + 1);
     dRing.assign (static_cast<size_t> (dr), 0.0f);
     dMask = dr - 1;
 

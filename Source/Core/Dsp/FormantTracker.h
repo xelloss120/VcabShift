@@ -55,7 +55,8 @@ private:
     std::array<double, 4> glideFrom {};  // 目印へ戻り始めたときの値
     std::array<bool, 4> prevTracked {};
     std::array<double, 4> lastRaw {};    // 前のフレームで選んだ値（ならす前）
-    std::array<int, 4> jumpCount {};     // 大きく跳んだ値を保留したフレームの数
+    std::array<int, 4> jumpCount {};     // 大きく跳んだ値を保留しているか（0 / 1）
+    std::array<double, 4> pendingRaw {}; // 保留している跳んだ値
 
     bool computeLpc (const float* x);
     void findRoots();
