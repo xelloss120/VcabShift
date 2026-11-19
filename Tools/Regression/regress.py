@@ -139,8 +139,11 @@ def evaluate():
             errs.append(np.sqrt(np.mean(d ** 2)))
         print(f'{name:10s} 狙いの包絡との差 dB:', ' '.join(f'{v} {e:.1f}' for v, e in zip(VOWELS, errs)), f' 平均 {np.mean(errs):.1f}')
 
-    render(inp, os.path.join(WORK, 'uniform4_eval.wav'), 'pitch=0 formant=4 unvoiced_formant=4')
-    render(inp, os.path.join(WORK, 'formants4_eval.wav'), 'pitch=0 formant=0 unvoiced_formant=0 f2_delta=4')
+    # 写像だけを測るので、初期値の F1〜F4 の差と EQ（2026-11-19 から 0 でない）は 0 にそろえる
+    flat = ' '.join(f'{k}=0' for k in ('f1_delta', 'f2_delta', 'f3_delta', 'f4_delta', 'uf1_delta', 'uf2_delta', 'uf3_delta', 'uf4_delta',
+                                        'eq_f0', 'eq_f1', 'eq_f2', 'eq_f3', 'eq_f4', 'eq_uf1', 'eq_uf2', 'eq_uf3', 'eq_uf4'))
+    render(inp, os.path.join(WORK, 'uniform4_eval.wav'), 'pitch=0 formant=4 unvoiced_formant=4 ' + flat)
+    render(inp, os.path.join(WORK, 'formants4_eval.wav'), 'pitch=0 formant=0 unvoiced_formant=0 ' + flat + ' f2_delta=4')
     warp_error('uniform4', lambda v: [(0.0, 4.0)])
 
     def formant_pts(v):

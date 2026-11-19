@@ -275,14 +275,34 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
             continue;
         }
 
+        // 追いかけられないフレーム: kHoldSeconds は前の値を保ち、そのあと kGlideSeconds で目印へ戻す
+        const auto lose = [&]
+        {
+            missing[uk] = std::min (missing[uk] + 1, holdFrames + glideFrames + 1); // 戻りきった後は数え続けない（あふれ防止）
+            if (missing[uk] == holdFrames + 1)
+                glideFrom[uk] = value[uk];
+            if (missing[uk] > holdFrames)
+            {
+                const double t = std::min (1.0, static_cast<double> (missing[uk] - holdFrames) / glideFrames);
+                value[uk] = std::exp (std::log (glideFrom[uk]) + t * (std::log (static_cast<double> (anchors[uk])) - std::log (glideFrom[uk])));
+            }
+        };
+
         // 飛び止め: 追いかけている途中で前のフレームから大きく跳んだら、次のフレームも同じ所（保留した値から
-        // kJumpSemitones 未満）なら受け入れる（それまでは前の値を保つ）。違う所へ跳んだら、それを新しく保留する
+        // kJumpSemitones 未満）なら受け入れる（それまでは前の値を保つ）。違う所へ跳んだら、それを新しく保留する。
+        // 保留が 2 フレーム以上続く（跳ぶ先が定まらない）ときは、追いかけられないフレームと同じく数える（前の値のまま固まらないように）
         if (tracked && prevTracked[uk] && std::abs (std::log2 (target / lastRaw[uk])) * 12.0 >= kJumpSemitones
             && ! (jumpCount[uk] > 0 && std::abs (std::log2 (target / pendingRaw[uk])) * 12.0 < kJumpSemitones))
         {
-            jumpCount[uk] = 1;
+            jumpCount[uk] = std::min (jumpCount[uk] + 1, 2);
             pendingRaw[uk] = target;
-            out.tracked[uk] = true;
+            if (jumpCount[uk] >= 2)
+            {
+                lose();
+                out.tracked[uk] = false;
+            }
+            else
+                out.tracked[uk] = true;
             continue;
         }
         if (tracked)
@@ -299,14 +319,7 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
         else
         {
             jumpCount[uk] = 0; // 追いかけられないフレームを挟んだら、保留した値は捨てる
-            missing[uk] = std::min (missing[uk] + 1, holdFrames + glideFrames + 1); // 戻りきった後は数え続けない（あふれ防止）
-            if (missing[uk] == holdFrames + 1)
-                glideFrom[uk] = value[uk];
-            if (missing[uk] > holdFrames)
-            {
-                const double t = std::min (1.0, static_cast<double> (missing[uk] - holdFrames) / glideFrames);
-                value[uk] = std::exp (std::log (glideFrom[uk]) + t * (std::log (static_cast<double> (anchors[uk])) - std::log (glideFrom[uk])));
-            }
+            lose();
         }
         prevTracked[uk] = tracked;
         out.tracked[uk] = tracked;

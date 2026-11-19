@@ -68,17 +68,17 @@ constexpr float kMinAnchorRatio = 1.15f; // 目印どうしを離す倍率
 struct Settings
 {
     float pitch = 12.0f;   // 半音
-    float formant = 6.0f;  // 半音
-    float unvoicedFormant = 6.0f; // 無声音の分（半音。有声音のフォルマントのつまみの代わりに使う）
-    std::array<float, 4> unvoicedDelta { 0.0f, 0.0f, 0.0f, 0.0f }; // 無声音の F1〜F4 の差（半音。位置は有声と同じ）
+    float formant = 4.0f;  // 半音
+    float unvoicedFormant = 4.0f; // 無声音の分（半音。有声音のフォルマントのつまみの代わりに使う）
+    std::array<float, 4> unvoicedDelta { 0.0f, 0.0f, -2.0f, -2.0f }; // 無声音の F1〜F4 の差（半音。位置は有声と同じ）
     AboveF4 unvoicedAboveF4 = AboveF4::followF4;
     WarpMode warpMode = WarpMode::formants;
-    std::array<float, 4> delta { 0.0f, 0.0f, 0.0f, 0.0f };          // 半音
+    std::array<float, 4> delta { 2.0f, 0.0f, 0.0f, -1.0f };          // 半音
     std::array<float, 4> anchor { 500.0f, 1400.0f, 2700.0f, 3500.0f }; // Hz
     AboveF4 aboveF4 = AboveF4::followF4;
     // 声に追従する EQ（dB）。有声は 基音・F1〜F4、無声は F1〜F4（位置はどれも動かした後）
-    std::array<float, 5> eq { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    std::array<float, 4> unvoicedEq { 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, 5> eq { 3.0f, 0.0f, 0.0f, 0.0f, -3.0f };
+    std::array<float, 4> unvoicedEq { -3.0f, 0.0f, 0.0f, -3.0f };
     float pitchMin = 80.0f; // Hz
     float pitchMax = 600.0f;
     InputChannel inputChannel = InputChannel::automatic;

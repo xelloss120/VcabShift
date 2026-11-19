@@ -50,7 +50,7 @@ static int run (int argc, char** argv)
     auto values = vcab::defaultValues();
     bool align = false;
     int block = 256;
-    std::string trackPath, framesPath, marksPath, grainsPath, streamsPath, backfillPath;
+    std::string trackPath, framesPath, marksPath, grainsPath, streamsPath, backfillPath, holdPath;
     vcab::Engine::Tuning tuning;
     for (int i = 3; i < argc; ++i)
     {
@@ -98,6 +98,77 @@ static int run (int argc, char** argv)
         if (a == "--lookahead" && i + 1 < argc)
         {
             tuning.pitchLookahead = std::stoi (argv[++i]);
+            continue;
+        }
+        // 試作（ガラガラ声）
+        if (a == "--holdlog" && i + 1 < argc)
+        {
+            holdPath = argv[++i];
+            continue;
+        }
+        if (a == "--trial-hold" && i + 1 < argc)
+        {
+            tuning.creakHold = std::stoi (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-corr" && i + 1 < argc)
+        {
+            tuning.holdCorr = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-gap" && i + 1 < argc)
+        {
+            tuning.holdGap = std::stoi (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-range" && i + 1 < argc)
+        {
+            tuning.holdRange = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-lpratio" && i + 1 < argc)
+        {
+            tuning.lowpassMinRatioDb = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-lpfloor" && i + 1 < argc)
+        {
+            tuning.lowpassAboveFloor = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-step" && i + 1 < argc)
+        {
+            tuning.holdStep = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-srange" && i + 1 < argc)
+        {
+            tuning.startRange = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-sframes" && i + 1 < argc)
+        {
+            tuning.startFrames = std::stoi (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-sjump" && i + 1 < argc)
+        {
+            tuning.startJump = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-octfix")
+        {
+            tuning.octaveFix = true;
+            continue;
+        }
+        if (a == "--trial-lowpass" && i + 1 < argc)
+        {
+            tuning.pitchLowpass = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--trial-median")
+        {
+            tuning.pitchMedian = true;
             continue;
         }
         if (a == "--octave-jump" && i + 1 < argc)
@@ -164,6 +235,8 @@ static int run (int argc, char** argv)
     if (! framesPath.empty())
         frameLog.reserve (static_cast<size_t> (len / (0.005 * fs)) + 16);
     engine.setFrameLog (framesPath.empty() ? nullptr : &frameLog);
+    std::vector<std::array<float, 4>> holdLog;
+    engine.setHoldLog (holdPath.empty() ? nullptr : &holdLog);
     std::vector<std::array<double, 4>> markLog;
     if (! marksPath.empty())
         markLog.reserve (static_cast<size_t> (len / 40) + 16);
@@ -295,6 +368,13 @@ static int run (int argc, char** argv)
             sw->writeFromFloatArrays (cp, 3, static_cast<int> (streamLog.size()));
     }
 
+    if (! holdPath.empty())
+    {
+        std::ofstream hl (holdPath);
+        hl << "t,why,f0,since" << std::endl;
+        for (const auto& r : holdLog)
+            hl << r[0] << ',' << r[1] << ',' << r[2] << ',' << r[3] << std::endl;
+    }
     if (! framesPath.empty())
     {
         std::ofstream fl (framesPath);
