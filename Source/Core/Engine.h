@@ -65,6 +65,13 @@ public:
         float startJump = 15.0f;    // A2: 発話の始まりで、ふだんの高さよりこれ（半音）より上の検出を、取れなかったとみなす（0 で使わない）
         float holdCorr = 0.85f;    // A: 直前の周期（T か 2T）で窓の波形がこれ以上重なるときだけ保つ
         bool octaveFix = false;     // B: 直前の高さの 1 オクターブ下に落ちたら 2 倍に戻す
+        // 「んー」（基音が弱く 2 倍音が強い声）の対策: ふだんの高さの約 1 オクターブ上（humLow〜humHigh オクターブ）を取ったとき、
+        // 倍の周期のほうが窓の波形がこれだけ（相関の差）よく重なれば、半分の高さにする。直している間は humStay で続ける。humEnter が 0 以下で使わない
+        float humEnter = 0.05f;
+        float humStay = 0.0f;
+        float humLow = 0.6f, humHigh = 1.4f;
+        float humCorr = 0.95f;      // 倍の周期の重なりがこれ以上のときだけ（「んー」はほぼ 1。高い声やかすれた声は 0.7〜0.85）
+        float humSpread = -4.0f;    // 直し始めるのは、subharmonicSpread がこれ（dB）以下のときだけ（「んー」は -9〜-12、ガラガラ声は -3 より上）
         float pitchLowpass = 0.0f;  // C1: ピッチ検出に渡す窓だけ低域通過（Hz。0 で使わない）
         float lowpassAboveFloor = 15.0f;  // C1: 背景の音よりこれだけ（dB）大きい窓だけ
         float lowpassMinRatioDb = -12.0f; // C1: 通した後の強さが元からこれ（dB）より下がる窓は、かけずに戻す
@@ -147,6 +154,12 @@ private:
     float lastVoicedF0 = 0.0f;
     int sinceVoiced = 1 << 20, holdFrames = 0, creakRun = 0;
     double typicalLog = 0.0, typicalWeight = 0.0;
+    bool humFixing = false; // 前のフレームで「んー」の対策をかけた
+    std::vector<float> humWin;
+    // そのフレームの窓を、半分の高さ f0 / 2 の 1〜8 倍の正弦波で最小二乗に当てはめ、
+    // 「3・5・7 倍（上の奇数）の強さ」−「1 倍（f0 / 2）の強さ」（どちらも f0 の倍音に対する dB）を返す。
+    // 「んー」は半分の高さの成分が一番下にだけあるので負、ガラガラ声は上の倍音の間にもあるので 0 前後より上
+    float subharmonicSpread (float f0);
     std::array<float, 2> recentF0 {};
     std::array<double, 3> lpB {}, lpA {};
     std::vector<float> rawWin;

@@ -9,6 +9,7 @@
 // --frames: 決まったフレームごとの { 窓の中心の時刻（秒、入力の時刻）, 有声, 高さ } を CSV に書く。
 // 終わりに、ブロックごとの処理時間の最大と 99.9% 点も出す（途切れの目安。ブロックの長さに対する割合）。
 // --lookahead n / --octave-jump p: ピッチ検出の先読みのフレームの数と、オクターブ跳びの確率（開発用。初期値 2 / 0.001）。
+// --hum e s: 「んー」の対策の、入るときと続けるときの相関の差（開発用。初期値 0.05 0。e を 0 にすると使わない）。
 // --first-period m l: ピッチ検出の 1 周期目の優先の、深さの差 m と深さの上限 l（開発用。初期値 0.05 0.5。差を 0 にすると使わない）。
 #include "Engine.h"
 
@@ -154,6 +155,12 @@ static int run (int argc, char** argv)
         if (a == "--trial-sjump" && i + 1 < argc)
         {
             tuning.startJump = std::stof (argv[++i]);
+            continue;
+        }
+        if (a == "--hum" && i + 2 < argc)
+        {
+            tuning.humEnter = std::stof (argv[++i]);
+            tuning.humStay = std::stof (argv[++i]);
             continue;
         }
         if (a == "--trial-octfix")

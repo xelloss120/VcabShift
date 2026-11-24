@@ -83,6 +83,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
         cueBuf.assign (static_cast<size_t> (n), {});
         cueWindow.assign (scratch.size(), 0.0f);
         rawWin.assign (scratch.size(), 0.0f);
+        humWin.assign (scratch.size(), 0.0f);
     }
     frames.assign (kFrameRing, Frame {});
     marks.assign (kMarkRing, Mark {});
@@ -146,6 +147,7 @@ void Engine::configure()
     sinceVoiced = 1 << 20;
     holdFrames = creakRun = 0;
     typicalLog = typicalWeight = 0.0;
+    humFixing = false;
     recentF0 = {};
     markCount = 0;
     markCursor = 0;
@@ -373,6 +375,81 @@ float Engine::windowCorr (int64_t j, float lagD, float range, float* bestLag) co
     return best;
 }
 
+float Engine::subharmonicSpread (float f0)
+{
+    constexpr int kParts = 8, kCols = 2 * kParts;
+    const int wp = detector.windowLength();
+    const int64_t end = ((frameCount + 1) * hop) / decim;
+    const int64_t start = end - wp;
+    if (start < 0 || dCount - start > dMask || wp > static_cast<int> (humWin.size()))
+        return 0.0f;
+    for (int i = 0; i < wp; ++i)
+        humWin[static_cast<size_t> (i)] = dRing[static_cast<size_t> ((start + i) & dMask)];
+
+    // ハン窓をかけた最小二乗（正規方程式）
+    std::array<double, kCols * kCols> ata {};
+    std::array<double, kCols> atb {}, col {};
+    const double w0 = 2.0 * kPi * 0.5 * f0 / fsd;
+    for (int i = 0; i < wp; ++i)
+    {
+        const double win = 0.5 - 0.5 * std::cos (2.0 * kPi * (i + 0.5) / wp);
+        const double c1 = std::cos (w0 * i), s1 = std::sin (w0 * i);
+        double c = c1, s = s1;
+        for (int k = 0; k < kParts; ++k)
+        {
+            col[static_cast<size_t> (2 * k)] = c * win;
+            col[static_cast<size_t> (2 * k + 1)] = s * win;
+            const double cn = c * c1 - s * s1;
+            s = s * c1 + c * s1;
+            c = cn;
+        }
+        const double y = humWin[static_cast<size_t> (i)] * win;
+        for (int a = 0; a < kCols; ++a)
+        {
+            atb[static_cast<size_t> (a)] += col[static_cast<size_t> (a)] * y;
+            for (int b = a; b < kCols; ++b)
+                ata[static_cast<size_t> (a * kCols + b)] += col[static_cast<size_t> (a)] * col[static_cast<size_t> (b)];
+        }
+    }
+    double trace = 0.0;
+    for (int a = 0; a < kCols; ++a)
+    {
+        trace += ata[static_cast<size_t> (a * kCols + a)];
+        for (int b = 0; b < a; ++b)
+            ata[static_cast<size_t> (a * kCols + b)] = ata[static_cast<size_t> (b * kCols + a)];
+    }
+    for (int a = 0; a < kCols; ++a)
+        ata[static_cast<size_t> (a * kCols + a)] += 1.0e-9 * trace / kCols + 1.0e-30;
+    // ガウスの消去法（対称正定値なので、ピボットの入れ替えなし）
+    for (int p = 0; p < kCols; ++p)
+    {
+        const double d = ata[static_cast<size_t> (p * kCols + p)];
+        for (int a = p + 1; a < kCols; ++a)
+        {
+            const double m = ata[static_cast<size_t> (a * kCols + p)] / d;
+            for (int b = p; b < kCols; ++b)
+                ata[static_cast<size_t> (a * kCols + b)] -= m * ata[static_cast<size_t> (p * kCols + b)];
+            atb[static_cast<size_t> (a)] -= m * atb[static_cast<size_t> (p)];
+        }
+    }
+    std::array<double, kCols> x {};
+    for (int a = kCols - 1; a >= 0; --a)
+    {
+        double s = atb[static_cast<size_t> (a)];
+        for (int b = a + 1; b < kCols; ++b)
+            s -= ata[static_cast<size_t> (a * kCols + b)] * x[static_cast<size_t> (b)];
+        x[static_cast<size_t> (a)] = s / ata[static_cast<size_t> (a * kCols + a)];
+    }
+    // k 倍（k = 1〜8）の強さの 2 乗
+    const auto power = [&x] (int k) { return x[static_cast<size_t> (2 * k - 2)] * x[static_cast<size_t> (2 * k - 2)] + x[static_cast<size_t> (2 * k - 1)] * x[static_cast<size_t> (2 * k - 1)]; };
+    const double odd = power (3) + power (5) + power (7);
+    const double even = power (2) + power (4) + power (6) + power (8);
+    const double first = power (1), second = power (2);
+    const double oddDb = 10.0 * std::log10 (odd / (even + 1.0e-30) + 1.0e-30);
+    const double firstDb = 10.0 * std::log10 (first / (second + 1.0e-30) + 1.0e-30);
+    return static_cast<float> (oddDb - firstDb);
+}
+
 // 試作（ガラガラ声）。B → A → C2 の順にかける
 PitchResult Engine::adjustPitch (const PitchResult& p, float levelDb, float tilt)
 {
@@ -381,6 +458,30 @@ PitchResult Engine::adjustPitch (const PitchResult& p, float levelDb, float tilt
     const bool voiceLike = levelDb > kSilentDb && levelDb > floorDb + 20.0f && levelDb > levelPeak - 25.0f && tilt > 0.3f;
     const bool recent = lastVoicedF0 > 0.0f && sinceVoiced <= 30; // 150ms 以内に有声だった
     bool held = false;
+
+    // 「んー」の対策: 基音が弱く 2 倍音が強い声は、半分の周期でも波形がよく重なり、2 倍の高さを取る。
+    // ふだんの高さの約 1 オクターブ上を取っていて、倍の周期のほうがはっきりよく重なるなら、半分の高さにする
+    // （ガラガラ声は、倍の周期がふだんの高さの 1 オクターブ下に来るので当たらない）
+    {
+        bool fixing = false;
+        if (tuning.humEnter > 0.0f && r.voiced && typicalWeight > 40.0 && 0.5f * r.f0 >= settings.pitchMin)
+        {
+            const double above = std::log2 (static_cast<double> (r.f0)) - typicalLog;
+            if (above >= tuning.humLow && above <= tuning.humHigh)
+            {
+                const float lagD = static_cast<float> (fsd / r.f0);
+                const float c1 = windowCorr (frameCount, lagD, 0.03f);
+                const float c2 = windowCorr (frameCount, 2.0f * lagD, 0.03f);
+                if (c2 >= tuning.humCorr && c2 >= c1 + (humFixing ? tuning.humStay : tuning.humEnter)
+                    && (humFixing || subharmonicSpread (r.f0) <= tuning.humSpread))
+                {
+                    r.f0 *= 0.5f;
+                    fixing = true;
+                }
+            }
+        }
+        humFixing = fixing;
+    }
 
     if (tuning.octaveFix && r.voiced && recent)
     {
@@ -501,7 +602,7 @@ void Engine::finalizeFrame (const PitchResult& rawPitch)
     f.centre = frameCentre (frameCount);
     const float levelDb = pendingLevel[static_cast<size_t> (frameCount % kPendingRing)];
     levelPeak = std::max (levelDb, levelPeak - kPeakDecayDbPerSec * static_cast<float> (hop / fs));
-    const bool trial = tuning.creakHold > 0 || tuning.octaveFix || tuning.pitchMedian;
+    const bool trial = tuning.creakHold > 0 || tuning.octaveFix || tuning.pitchMedian || tuning.humEnter > 0.0f;
     const PitchResult pitch = trial ? adjustPitch (rawPitch, levelDb, pendingTilt[static_cast<size_t> (frameCount % kPendingRing)]) : rawPitch;
 
     // F1〜F4: 窓の中心をフレームの中心にそろえる（まだ届いていなければ、いちばん新しい所で終わる窓）
