@@ -1,4 +1,5 @@
 #include "Grain.h"
+#include "MathConstants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +9,6 @@ namespace vcab
 
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
 
 // ハン窓の値 h の 1 乗・1/2 乗・1/4 乗（窓の分け方はこの 3 つだけなので、累乗の計算をしない）
 float hannPower (float h, int quarters)

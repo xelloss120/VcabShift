@@ -1,4 +1,5 @@
 #include "WarpMap.h"
+#include "MathConstants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +9,7 @@ namespace vcab
 
 namespace
 {
-constexpr float kPi = 3.14159265f;
+constexpr float kPiF = static_cast<float> (kPi);
 constexpr float kMinTailOctaves = 1.0f / 3.0f;
 constexpr float kTailMargin = 1.25f;
 constexpr float kMinOutStep = 1.0e-4f; // 単調に保つときの、格子 1 つ分の最小の増え（log2）
@@ -38,7 +39,7 @@ void WarpMap::build (float formant, const std::array<float, 4>& delta,
     const float d4 = formant + delta[3];
     const float dAbove = above == AboveF4::followF4 ? d4 : above == AboveF4::followUniform ? formant : 0.0f;
     // 差が大きいほど広くつなぐ（余弦の一番急な所の傾き π/2 × 差 が 1 オクターブで 12 半音を超えないように）
-    const float width = std::max (kMinTailOctaves, std::abs (dAbove - d4) / 12.0f * (kPi * 0.5f) * kTailMargin);
+    const float width = std::max (kMinTailOctaves, std::abs (dAbove - d4) / 12.0f * (kPiF * 0.5f) * kTailMargin);
     points[numPoints++] = { points[3].x + width, dAbove };
     uniform = std::exp2 ((formant + delta[1]) / 12.0f);
 
@@ -69,7 +70,7 @@ float WarpMap::curve (float x) const
         if (x <= b.x)
         {
             const float t = (x - a.x) / std::max (b.x - a.x, 1.0e-6f);
-            return a.d + (b.d - a.d) * 0.5f * (1.0f - std::cos (kPi * t));
+            return a.d + (b.d - a.d) * 0.5f * (1.0f - std::cos (kPiF * t));
         }
     }
     return points[static_cast<size_t> (numPoints - 1)].d;

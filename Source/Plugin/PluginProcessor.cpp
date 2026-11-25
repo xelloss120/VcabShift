@@ -138,7 +138,7 @@ void VcabShiftProcessor::run (juce::AudioBuffer<float>& buffer, bool bypassed)
             for (int i = 0; i < len; ++i)
                 dryRing[c][static_cast<size_t> ((dryPos + i) & dryMask)] = src[i];
         }
-        engine.process (chunk, std::min (numIn, 2), monoOut.data() + 0, len, delayedIn.data());
+        engine.process (chunk, std::min (numIn, 2), monoOut.data(), len, delayedIn.data());
         inputFifo.push (delayedIn.data(), len);
         for (int c = 0; c < numOut; ++c)
         {

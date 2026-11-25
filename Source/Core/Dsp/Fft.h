@@ -2,6 +2,8 @@
 // 回転因子の表は、使う一番大きい大きさの分を prepare で作り、小さい大きさはそれを間引いて使う。
 #pragma once
 
+#include "MathConstants.h"
+
 #include <cmath>
 #include <complex>
 #include <utility>
@@ -22,7 +24,7 @@ public:
         twiddle.resize (static_cast<size_t> (maxN / 2));
         for (int k = 0; k < maxN / 2; ++k)
         {
-            const double a = -2.0 * 3.14159265358979323846 * k / maxN;
+            const double a = -2.0 * kPi * k / maxN;
             twiddle[static_cast<size_t> (k)] = Complex (static_cast<float> (std::cos (a)), static_cast<float> (std::sin (a)));
         }
     }

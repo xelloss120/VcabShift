@@ -1,4 +1,5 @@
 #include "FormantTracker.h"
+#include "MathConstants.h"
 
 #include "../Params.h"
 
@@ -12,7 +13,6 @@ namespace vcab
 namespace
 {
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kPreEmphasis = kLpcPreEmphasis;
 constexpr double kMaxBandwidth = 700.0;  // Hz。これより広い根は山とみなさない
 constexpr double kHoldSeconds = 0.150;

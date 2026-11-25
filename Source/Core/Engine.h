@@ -9,6 +9,7 @@
 #include "Dsp/FormantTracker.h"
 #include "Dsp/Grain.h"
 #include "Dsp/PitchDetector.h"
+#include "Dsp/PitchRepair.h"
 #include "Dsp/WarpMap.h"
 
 #include <array>
@@ -55,27 +56,7 @@ public:
         bool voicingCues = true;    // 有声・無声の判定に、周期性以外の手がかり（帯域の比、音量）を使う
         float firstMargin = 0.05f;  // 1 周期目の優先（PitchDetector::setFirstPeriod）の深さの差と上限。差が 0 以下で使わない
         float firstLimit = 0.5f;
-        // 試作（ガラガラ声）: A = 高さが取れなくなったら直前の高さを保つ（1）、さらにふだんの高さから始める（2）
-        int creakHold = 2;
-        int holdGap = 8;            // A: 有声（保ったものを含む）からこのフレーム数以内なら、保ち直せる
-        float holdRange = 0.15f;    // A: 重なりを見るずらす量の幅（±。0.06 より大きければ、一番よく重なった周期について行く）
-        float holdStep = 0.15f;     // A: 前のフレームから続けて保つときの、重なりを見る幅（±。少しずつずれて隣の倍数の周期に乗り移らないように）
-        float startRange = 0.3f;    // A2: ふだんの高さから始めるときの、重なりを見る幅（±）
-        int startFrames = 2;        // A2: ふだんの高さから始めるまでに続くフレームの数
-        float startJump = 15.0f;    // A2: 発話の始まりで、ふだんの高さよりこれ（半音）より上の検出を、取れなかったとみなす（0 で使わない）
-        float holdCorr = 0.85f;    // A: 直前の周期（T か 2T）で窓の波形がこれ以上重なるときだけ保つ
-        bool octaveFix = false;     // B: 直前の高さの 1 オクターブ下に落ちたら 2 倍に戻す
-        // 「んー」（基音が弱く 2 倍音が強い声）の対策: ふだんの高さの約 1 オクターブ上（humLow〜humHigh オクターブ）を取ったとき、
-        // 倍の周期のほうが窓の波形がこれだけ（相関の差）よく重なれば、半分の高さにする。直している間は humStay で続ける。humEnter が 0 以下で使わない
-        float humEnter = 0.05f;
-        float humStay = 0.0f;
-        float humLow = 0.6f, humHigh = 1.4f;
-        float humCorr = 0.95f;      // 倍の周期の重なりがこれ以上のときだけ（「んー」はほぼ 1。高い声やかすれた声は 0.7〜0.85）
-        float humSpread = -4.0f;    // 直し始めるのは、subharmonicSpread がこれ（dB）以下のときだけ（「んー」は -9〜-12、ガラガラ声は -3 より上）
-        float pitchLowpass = 0.0f;  // C1: ピッチ検出に渡す窓だけ低域通過（Hz。0 で使わない）
-        float lowpassAboveFloor = 15.0f;  // C1: 背景の音よりこれだけ（dB）大きい窓だけ
-        float lowpassMinRatioDb = -12.0f; // C1: 通した後の強さが元からこれ（dB）より下がる窓は、かけずに戻す
-        bool pitchMedian = false;   // C2: 決まった高さを直近 3 フレームの中央値にする
+        PitchRepair::Tuning repair; // 決まった高さの手直し（「んー」の対策とガラガラ声の手当て）
     };
     void setTuning (const Tuning& t) { tuning = t; }
 
@@ -87,9 +68,9 @@ public:
     void setGrainLog (std::vector<std::array<double, 4>>* log) { grainLog = log; }
     // 開発用: 出力の標本ごとに { 有声の流れ, 無声の流れ, つなぎの角度（0 で無声だけ、π/2 で有声だけ） } を足す
     void setStreamLog (std::vector<std::array<float, 3>>* log) { streamLog = log; }
+    // 開発用: ガラガラ声の手当ての判定ごとに { 時刻（秒）, 理由, 高さ, 有声からのフレーム数 } を足す（理由は PitchRepair::setLog）
+    void setHoldLog (std::vector<std::array<float, 4>>* log) { repair.setLog (log); }
     // 開発用: 声の出だしで最初の有声の断片を遡って置くごとに { つなぎの始まりの時刻, 置いた（置こうとした）出力の時刻, 置けたら 1 } を足す
-    // 開発用: 試作（ガラガラ声）の判定ごとに { 時刻（秒）, 理由, 高さ, 有声からのフレーム数 } を足す
-    void setHoldLog (std::vector<std::array<float, 4>>* log) { holdLog = log; }
     void setBackfillLog (std::vector<std::array<double, 3>>* log) { backfillLog = log; }
 
     // 一律の倍率の範囲（これを超える分は補正で動かす）
@@ -119,7 +100,6 @@ private:
     std::vector<std::array<double, 4>>* grainLog = nullptr;
     std::vector<std::array<float, 3>>* streamLog = nullptr;
     std::vector<std::array<double, 3>>* backfillLog = nullptr;
-    std::vector<std::array<float, 4>>* holdLog = nullptr;
     bool configured = false;
 
     // 長さ（標本数）
@@ -148,24 +128,9 @@ private:
     int lag = 0;                // ピッチ検出の先読みのフレームの数
     static constexpr int kPendingRing = 64;
     std::array<float, kPendingRing> pendingLevel {}; // 分析して、まだ決まっていないフレームの音量（dB）
-    // 試作（ガラガラ声）の状態
-    std::array<float, kPendingRing> pendingTilt {};  // 帯域の比の手がかり（-1〜1。正が声らしい）
-    float floorDb = -200.0f;
-    float lastVoicedF0 = 0.0f;
-    int sinceVoiced = 1 << 20, holdFrames = 0, creakRun = 0;
-    double typicalLog = 0.0, typicalWeight = 0.0;
-    bool humFixing = false; // 前のフレームで「んー」の対策をかけた
-    std::vector<float> humWin;
-    // そのフレームの窓を、半分の高さ f0 / 2 の 1〜8 倍の正弦波で最小二乗に当てはめ、
-    // 「3・5・7 倍（上の奇数）の強さ」−「1 倍（f0 / 2）の強さ」（どちらも f0 の倍音に対する dB）を返す。
-    // 「んー」は半分の高さの成分が一番下にだけあるので負、ガラガラ声は上の倍音の間にもあるので 0 前後より上
-    float subharmonicSpread (float f0);
-    std::array<float, 2> recentF0 {};
-    std::array<double, 3> lpB {}, lpA {};
-    std::vector<float> rawWin;
-    PitchResult adjustPitch (const PitchResult& p, float levelDb, float tilt);
-    // そのフレームの窓で、ずらす量 lag（落とした音の標本）× (1 ± range) の正規化相互相関の最大。bestLag にそのずらす量
-    float windowCorr (int64_t frame, float lag, float range, float* bestLag = nullptr) const;
+    std::array<float, kPendingRing> pendingTilt {};  // 同じく、帯域の比の手がかり（-1〜1。正が声らしい）
+    PitchRepair repair;
+    std::vector<float> repairWin; // 決まったフレームの窓（PitchRepair に渡す）
     float levelPeak = -120.0f;
     float rawPeak = -120.0f;    // 分析した時点での、最近の一番大きい音（dB。有声・無声の手がかり用）
     Fft cueFft;

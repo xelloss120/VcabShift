@@ -1,4 +1,5 @@
 #include "FollowEq.h"
+#include "MathConstants.h"
 #include "WarpMap.h"
 
 #include <algorithm>
@@ -9,7 +10,6 @@ namespace vcab
 
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
 constexpr int kUpdateSamples = 16;          // 係数を求め直す間隔
 constexpr double kFreqSeconds = 0.005;      // 中心のならし（フレームの間隔 5ms で段になって動くのを、なめらかにする）
 constexpr double kGainSeconds = 0.020;      // 量のならし（つまみを動かしたとき）

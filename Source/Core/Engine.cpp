@@ -1,5 +1,7 @@
 #include "Engine.h"
 
+#include "Dsp/MathConstants.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -8,7 +10,6 @@ namespace vcab
 
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kHopSeconds = 0.005;
 constexpr double kUnvoicedSeconds = 0.005;
 constexpr double kFadeSeconds = 0.010;      // 有声と無声のつなぎ、チャンネルの切り替え
@@ -65,15 +66,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     lag = std::clamp (tuning.pitchLookahead, 0, kPendingRing - 1);
     detector.prepare (static_cast<float> (fsd), static_cast<float> (kLowestPitch), static_cast<float> (kHighestPitch), lag, tuning.octaveJump);
     detector.setFirstPeriod (tuning.firstMargin, tuning.firstLimit);
-    if (tuning.pitchLowpass > 0.0f)
-    {
-        // 2 次のバターワース（双一次変換）。窓の中で前後に往復してかける
-        const double w = std::tan (kPi * std::min (static_cast<double> (tuning.pitchLowpass), 0.45 * fsd) / fsd);
-        const double q = std::sqrt (2.0), n = 1.0 / (1.0 + q * w + w * w);
-        lpB = { w * w * n, 2.0 * w * w * n, w * w * n };
-        lpA = { 1.0, 2.0 * (w * w - 1.0) * n, (1.0 - q * w + w * w) * n };
-    }
-    hop =static_cast<int> (std::lround (kHopSeconds * fs));
+    hop = static_cast<int> (std::lround (kHopSeconds * fs));
     tracker.prepare (static_cast<float> (fsd), static_cast<float> (hop / fs));
     scratch.assign (static_cast<size_t> (std::max (2 * (static_cast<int> (std::ceil (fsd / kLowestPitch)) + 4) + 2,
                                                    tracker.windowLength()) + 8), 0.0f);
@@ -82,9 +75,10 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
         cueFft.prepare (n);
         cueBuf.assign (static_cast<size_t> (n), {});
         cueWindow.assign (scratch.size(), 0.0f);
-        rawWin.assign (scratch.size(), 0.0f);
-        humWin.assign (scratch.size(), 0.0f);
+        repairWin.assign (scratch.size(), 0.0f);
     }
+    repair.setTuning (tuning.repair);
+    repair.prepare (fsd, static_cast<int> (scratch.size()));
     frames.assign (kFrameRing, Frame {});
     marks.assign (kMarkRing, Mark {});
 
@@ -142,13 +136,7 @@ void Engine::configure()
     nextFrameAt = hop;
     levelPeak = -120.0f;
     rawPeak = -120.0f;
-    floorDb = -200.0f;
-    lastVoicedF0 = 0.0f;
-    sinceVoiced = 1 << 20;
-    holdFrames = creakRun = 0;
-    typicalLog = typicalWeight = 0.0;
-    humFixing = false;
-    recentF0 = {};
+    repair.reset();
     markCount = 0;
     markCursor = 0;
     outPos = -latency;
@@ -289,31 +277,7 @@ void Engine::analyzeFrame()
     float up = 0.0f, down = 0.0f;
     if (tuning.voicingCues)
         voicingCue (wp, levelDb, up, down);
-    // 背景の音の大きさ: 一番小さい音を、1 秒に 3dB ずつ上げながら追う（試作用）
-    floorDb = floorDb < -150.0f ? levelDb : std::min (levelDb, floorDb + 3.0f * static_cast<float> (hop / fs));
-    if (tuning.pitchLowpass > 0.0f && levelDb > floorDb + tuning.lowpassAboveFloor)
-    {
-        // C1: 端の立ち上がりを抑えるため、最初の値から始める。
-        // 低い所に音がない窓（ささやき、高い声）は、狭い帯域の雑音が周期的に見えるので、かけずに戻す
-        std::copy (scratch.begin(), scratch.begin() + wp, rawWin.begin());
-        for (int pass = 0; pass < 2; ++pass)
-        {
-            const int s0 = pass == 0 ? 0 : wp - 1, step = pass == 0 ? 1 : -1;
-            double x1 = scratch[static_cast<size_t> (s0)], x2 = x1, y1 = x1, y2 = x1;
-            for (int k = 0, i = s0; k < wp; ++k, i += step)
-            {
-                const double xv = scratch[static_cast<size_t> (i)];
-                const double yv = lpB[0] * xv + lpB[1] * x1 + lpB[2] * x2 - lpA[1] * y1 - lpA[2] * y2;
-                x2 = x1; x1 = xv; y2 = y1; y1 = yv;
-                scratch[static_cast<size_t> (i)] = static_cast<float> (yv);
-            }
-        }
-        double ef = 0.0;
-        for (int i = 0; i < wp; ++i)
-            ef += static_cast<double> (scratch[static_cast<size_t> (i)]) * scratch[static_cast<size_t> (i)];
-        if (10.0 * std::log10 ((ef + 1.0e-30) / (e + 1.0e-30)) < tuning.lowpassMinRatioDb)
-            std::copy (rawWin.begin(), rawWin.begin() + wp, scratch.begin());
-    }
+    repair.observeLevel (levelDb, static_cast<float> (hop / fs));
     PitchResult pitch;
     if (detector.analyze (scratch.data(), up, down, pitch))
         finalizeFrame (pitch);
@@ -345,254 +309,6 @@ void Engine::voicingCue (int wp, float levelDb, float& up, float& down)
     down = std::min (0.0f, t) + std::clamp ((levelDb - rawPeak + kCueQuietDb) * kCueQuietSlope, -1.0f, 0.0f);
 }
 
-float Engine::windowCorr (int64_t j, float lagD, float range, float* bestLag) const
-{
-    const int wp = detector.windowLength();
-    const int64_t end = ((j + 1) * hop) / decim; // そのフレームを分析したときの dCount
-    const int64_t start = end - wp;
-    if (start < 0 || dCount - start > dMask)
-        return 0.0f;
-    const int lo = std::max (2, static_cast<int> (std::floor (lagD * (1.0f - range))));
-    const int hi = std::min (wp - 40, static_cast<int> (std::ceil (lagD * (1.0f + range))));
-    float best = -1.0f;
-    for (int l = lo; l <= hi; ++l)
-    {
-        double ab = 0.0, aa = 0.0, bb = 0.0;
-        for (int i = 0; i < wp - l; ++i)
-        {
-            const double a = dRing[static_cast<size_t> ((start + i) & dMask)];
-            const double b = dRing[static_cast<size_t> ((start + i + l) & dMask)];
-            ab += a * b; aa += a * a; bb += b * b;
-        }
-        const float v = static_cast<float> (ab / std::sqrt (aa * bb + 1.0e-30));
-        if (v > best)
-        {
-            best = v;
-            if (bestLag != nullptr)
-                *bestLag = static_cast<float> (l);
-        }
-    }
-    return best;
-}
-
-float Engine::subharmonicSpread (float f0)
-{
-    constexpr int kParts = 8, kCols = 2 * kParts;
-    const int wp = detector.windowLength();
-    const int64_t end = ((frameCount + 1) * hop) / decim;
-    const int64_t start = end - wp;
-    if (start < 0 || dCount - start > dMask || wp > static_cast<int> (humWin.size()))
-        return 0.0f;
-    for (int i = 0; i < wp; ++i)
-        humWin[static_cast<size_t> (i)] = dRing[static_cast<size_t> ((start + i) & dMask)];
-
-    // ハン窓をかけた最小二乗（正規方程式）
-    std::array<double, kCols * kCols> ata {};
-    std::array<double, kCols> atb {}, col {};
-    const double w0 = 2.0 * kPi * 0.5 * f0 / fsd;
-    for (int i = 0; i < wp; ++i)
-    {
-        const double win = 0.5 - 0.5 * std::cos (2.0 * kPi * (i + 0.5) / wp);
-        const double c1 = std::cos (w0 * i), s1 = std::sin (w0 * i);
-        double c = c1, s = s1;
-        for (int k = 0; k < kParts; ++k)
-        {
-            col[static_cast<size_t> (2 * k)] = c * win;
-            col[static_cast<size_t> (2 * k + 1)] = s * win;
-            const double cn = c * c1 - s * s1;
-            s = s * c1 + c * s1;
-            c = cn;
-        }
-        const double y = humWin[static_cast<size_t> (i)] * win;
-        for (int a = 0; a < kCols; ++a)
-        {
-            atb[static_cast<size_t> (a)] += col[static_cast<size_t> (a)] * y;
-            for (int b = a; b < kCols; ++b)
-                ata[static_cast<size_t> (a * kCols + b)] += col[static_cast<size_t> (a)] * col[static_cast<size_t> (b)];
-        }
-    }
-    double trace = 0.0;
-    for (int a = 0; a < kCols; ++a)
-    {
-        trace += ata[static_cast<size_t> (a * kCols + a)];
-        for (int b = 0; b < a; ++b)
-            ata[static_cast<size_t> (a * kCols + b)] = ata[static_cast<size_t> (b * kCols + a)];
-    }
-    for (int a = 0; a < kCols; ++a)
-        ata[static_cast<size_t> (a * kCols + a)] += 1.0e-9 * trace / kCols + 1.0e-30;
-    // ガウスの消去法（対称正定値なので、ピボットの入れ替えなし）
-    for (int p = 0; p < kCols; ++p)
-    {
-        const double d = ata[static_cast<size_t> (p * kCols + p)];
-        for (int a = p + 1; a < kCols; ++a)
-        {
-            const double m = ata[static_cast<size_t> (a * kCols + p)] / d;
-            for (int b = p; b < kCols; ++b)
-                ata[static_cast<size_t> (a * kCols + b)] -= m * ata[static_cast<size_t> (p * kCols + b)];
-            atb[static_cast<size_t> (a)] -= m * atb[static_cast<size_t> (p)];
-        }
-    }
-    std::array<double, kCols> x {};
-    for (int a = kCols - 1; a >= 0; --a)
-    {
-        double s = atb[static_cast<size_t> (a)];
-        for (int b = a + 1; b < kCols; ++b)
-            s -= ata[static_cast<size_t> (a * kCols + b)] * x[static_cast<size_t> (b)];
-        x[static_cast<size_t> (a)] = s / ata[static_cast<size_t> (a * kCols + a)];
-    }
-    // k 倍（k = 1〜8）の強さの 2 乗
-    const auto power = [&x] (int k) { return x[static_cast<size_t> (2 * k - 2)] * x[static_cast<size_t> (2 * k - 2)] + x[static_cast<size_t> (2 * k - 1)] * x[static_cast<size_t> (2 * k - 1)]; };
-    const double odd = power (3) + power (5) + power (7);
-    const double even = power (2) + power (4) + power (6) + power (8);
-    const double first = power (1), second = power (2);
-    const double oddDb = 10.0 * std::log10 (odd / (even + 1.0e-30) + 1.0e-30);
-    const double firstDb = 10.0 * std::log10 (first / (second + 1.0e-30) + 1.0e-30);
-    return static_cast<float> (oddDb - firstDb);
-}
-
-// 試作（ガラガラ声）。B → A → C2 の順にかける
-PitchResult Engine::adjustPitch (const PitchResult& p, float levelDb, float tilt)
-{
-    PitchResult r = p;
-    bool unreliable = false;
-    const bool voiceLike = levelDb > kSilentDb && levelDb > floorDb + 20.0f && levelDb > levelPeak - 25.0f && tilt > 0.3f;
-    const bool recent = lastVoicedF0 > 0.0f && sinceVoiced <= 30; // 150ms 以内に有声だった
-    bool held = false;
-
-    // 「んー」の対策: 基音が弱く 2 倍音が強い声は、半分の周期でも波形がよく重なり、2 倍の高さを取る。
-    // ふだんの高さの約 1 オクターブ上を取っていて、倍の周期のほうがはっきりよく重なるなら、半分の高さにする
-    // （ガラガラ声は、倍の周期がふだんの高さの 1 オクターブ下に来るので当たらない）
-    {
-        bool fixing = false;
-        if (tuning.humEnter > 0.0f && r.voiced && typicalWeight > 40.0 && 0.5f * r.f0 >= settings.pitchMin)
-        {
-            const double above = std::log2 (static_cast<double> (r.f0)) - typicalLog;
-            if (above >= tuning.humLow && above <= tuning.humHigh)
-            {
-                const float lagD = static_cast<float> (fsd / r.f0);
-                const float c1 = windowCorr (frameCount, lagD, 0.03f);
-                const float c2 = windowCorr (frameCount, 2.0f * lagD, 0.03f);
-                if (c2 >= tuning.humCorr && c2 >= c1 + (humFixing ? tuning.humStay : tuning.humEnter)
-                    && (humFixing || subharmonicSpread (r.f0) <= tuning.humSpread))
-                {
-                    r.f0 *= 0.5f;
-                    fixing = true;
-                }
-            }
-        }
-        humFixing = fixing;
-    }
-
-    if (tuning.octaveFix && r.voiced && recent)
-    {
-        const float d = std::log2 (2.0f * r.f0 / lastVoicedF0);
-        if (std::abs (d) < 0.25f && 2.0f * r.f0 <= settings.pitchMax)
-            r.f0 *= 2.0f;
-    }
-    if (tuning.creakHold > 0)
-    {
-        // その高さの周期か 2 倍の周期で、窓の波形がよく重なるか（息やささやきは重ならない）
-        // 重なれば、一番よく重なった周期からの高さ（2 倍の周期なら半分にする）、重ならなければ 0
-        const auto periodic = [this] (float f0, float range)
-        {
-            const float lagD = static_cast<float> (fsd / f0);
-            float l1 = lagD, l2 = 2.0f * lagD;
-            const float c1 = windowCorr (frameCount, lagD, range, &l1);
-            const float c2 = windowCorr (frameCount, 2.0f * lagD, range, &l2);
-            if (std::max (c1, c2) < tuning.holdCorr)
-                return 0.0f;
-            return static_cast<float> (c2 >= c1 ? 2.0 * fsd / l2 : fsd / l1);
-        };
-        const bool continuing = lastVoicedF0 > 0.0f && sinceVoiced <= tuning.holdGap && holdFrames < 400;
-        // 取れなかった、または直前の高さから 7 半音より大きく上へ跳んだ。
-        // 続いていなければ（発話の始まり）、ふだんの高さから startJump 半音より上（響きの周期を取った）
-        const bool learned = typicalWeight > 40.0;
-        const float typical = learned ? static_cast<float> (std::exp2 (typicalLog)) : 0.0f;
-        // 検出した高さの周期でも窓がよく重なるなら、検出を信じる（本当に跳んだ声を、低いまま保たないように）
-        const auto supported = [this, &r] { return windowCorr (frameCount, static_cast<float> (fsd / r.f0), 0.03f) >= tuning.holdCorr; };
-        bool jumped = false;
-        if (r.voiced && continuing)
-            jumped = std::log2 (r.f0 / lastVoicedF0) > 7.0f / 12.0f && ! supported();
-        else if (r.voiced && learned && tuning.startJump > 0.0f)
-        {
-            jumped = std::log2 (r.f0 / typical) > tuning.startJump / 12.0f && ! supported();
-            unreliable = jumped; // 発話の始まりの、響きの周期を取ったものは、直前の高さとして覚えない
-        }
-        const bool lost = ! r.voiced || jumped;
-        float g = 0.0f;
-        int why = lost ? 0 : 9; // 開発用の記録: 9 = 取れている
-        if (lost && ! voiceLike)
-            why = 3;
-        else if (lost && continuing && (g = periodic (lastVoicedF0, sinceVoiced <= 1 ? tuning.holdStep : tuning.holdRange)) > 0.0f)
-        {
-            r.voiced = true;
-            r.f0 = tuning.holdRange > 0.06f ? g : lastVoicedF0;
-            lastVoicedF0 = r.f0; // 保っている間も、重なりの周期について行く
-            held = true;
-            why = 1;
-        }
-        else if (lost)
-        {
-            why = continuing ? 4 : 8;
-            if (tuning.creakHold >= 2 && sinceVoiced > 1)
-            {
-                if (! learned)
-                    why = 5;
-                else if ((g = periodic (typical, tuning.startRange)) <= 0.0f)
-                    why = 6;
-                else if (++creakRun < tuning.startFrames)
-                    why = 7;
-                else
-                {
-                    // 直前の有声がない: ふだんの高さの近くから始める（3 フレーム続いてから）
-                    r.voiced = true;
-                    r.f0 = g;
-                    lastVoicedF0 = r.f0;
-                    held = true;
-                    why = 2;
-                }
-            }
-        }
-        if (holdLog != nullptr)
-            holdLog->push_back ({ static_cast<float> (frameSlot (frameCount).centre / fs), static_cast<float> (why), r.voiced ? r.f0 : 0.0f, static_cast<float> (sinceVoiced) });
-        if (! voiceLike)
-            creakRun = 0;
-    }
-
-    if (r.voiced)
-    {
-        if (held)
-            ++holdFrames;
-        else if (! unreliable)
-        {
-            holdFrames = 0;
-            lastVoicedF0 = r.f0;
-            // ふだんの高さ: 有声のフレームの log2 の高さの平均（重みは 1000 フレーム = 5 秒でならす）
-            typicalWeight = std::min (typicalWeight + 1.0, 1000.0);
-            typicalLog += (std::log2 (static_cast<double> (r.f0)) - typicalLog) / typicalWeight;
-        }
-        if (held || ! unreliable)
-            sinceVoiced = 0;
-        else
-            sinceVoiced = std::min (sinceVoiced + 1, 1 << 20);
-    }
-    else
-    {
-        sinceVoiced = std::min (sinceVoiced + 1, 1 << 20);
-        holdFrames = 0;
-    }
-
-    if (tuning.pitchMedian)
-    {
-        const float cur = r.voiced ? r.f0 : 0.0f;
-        if (cur > 0.0f && recentF0[0] > 0.0f && recentF0[1] > 0.0f)
-            r.f0 = std::max (std::min (cur, recentF0[0]), std::min (std::max (cur, recentF0[0]), recentF0[1]));
-        recentF0[1] = recentF0[0];
-        recentF0[0] = cur;
-    }
-    return r;
-}
-
 void Engine::finalizeFrame (const PitchResult& rawPitch)
 {
     // 落とした音の i 番目の標本の時刻（元の標本の番号）
@@ -602,8 +318,20 @@ void Engine::finalizeFrame (const PitchResult& rawPitch)
     f.centre = frameCentre (frameCount);
     const float levelDb = pendingLevel[static_cast<size_t> (frameCount % kPendingRing)];
     levelPeak = std::max (levelDb, levelPeak - kPeakDecayDbPerSec * static_cast<float> (hop / fs));
-    const bool trial = tuning.creakHold > 0 || tuning.octaveFix || tuning.pitchMedian || tuning.humEnter > 0.0f;
-    const PitchResult pitch = trial ? adjustPitch (rawPitch, levelDb, pendingTilt[static_cast<size_t> (frameCount % kPendingRing)]) : rawPitch;
+    PitchResult pitch = rawPitch;
+    if (repair.enabled())
+    {
+        // このフレームの窓（分析したときの、落とした音の新しい端から wp 個）。輪にもう残っていなければ渡さない
+        const int wp = detector.windowLength();
+        const int64_t end = ((frameCount + 1) * hop) / decim;
+        const int64_t start = end - wp;
+        const bool available = start >= 0 && dCount - start <= dMask;
+        if (available)
+            for (int i = 0; i < wp; ++i)
+                repairWin[static_cast<size_t> (i)] = dRing[static_cast<size_t> ((start + i) & dMask)];
+        pitch = repair.adjust (rawPitch, available ? repairWin.data() : nullptr, wp, levelDb, levelPeak,
+                               pendingTilt[static_cast<size_t> (frameCount % kPendingRing)], settings.pitchMin, f.centre / fs);
+    }
 
     // F1〜F4: 窓の中心をフレームの中心にそろえる（まだ届いていなければ、いちばん新しい所で終わる窓）
     const int wt = tracker.windowLength();

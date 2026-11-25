@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VcabShift VERSION 1.2.4 LANGUAGES C CXX)
+project(VcabShift VERSION 1.2.5 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,7 @@ add_library(VcabShiftCore STATIC
     Source/Core/Dsp/FormantTracker.cpp
     Source/Core/Dsp/Grain.cpp
     Source/Core/Dsp/PitchDetector.cpp
+    Source/Core/Dsp/PitchRepair.cpp
     Source/Core/Dsp/WarpMap.cpp
 )
 target_include_directories(VcabShiftCore PUBLIC Source/Core)

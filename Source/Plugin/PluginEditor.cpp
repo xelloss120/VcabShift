@@ -157,6 +157,7 @@ void VcabShiftEditor::startMeasure()
     savedMin = proc.value (vcab::P::pitchMin);
     setParamValue (vcab::P::pitchMin, vcab::paramInfo (vcab::P::pitchMin).minValue);
     f0Samples.clear();
+    lastFrameCount = proc.status().voicingCount.load(); // 押す前のフレームを、新しいフレームとみなさないように
     measuring = true;
     measureStart = juce::Time::getMillisecondCounterHiRes();
     messageUntil = 0.0;

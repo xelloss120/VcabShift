@@ -109,73 +109,48 @@ static int run (int argc, char** argv)
         }
         if (a == "--trial-hold" && i + 1 < argc)
         {
-            tuning.creakHold = std::stoi (argv[++i]);
+            tuning.repair.creakHold = std::stoi (argv[++i]);
             continue;
         }
         if (a == "--trial-corr" && i + 1 < argc)
         {
-            tuning.holdCorr = std::stof (argv[++i]);
+            tuning.repair.holdCorr = std::stof (argv[++i]);
             continue;
         }
         if (a == "--trial-gap" && i + 1 < argc)
         {
-            tuning.holdGap = std::stoi (argv[++i]);
+            tuning.repair.holdGap = std::stoi (argv[++i]);
             continue;
         }
         if (a == "--trial-range" && i + 1 < argc)
         {
-            tuning.holdRange = std::stof (argv[++i]);
-            continue;
-        }
-        if (a == "--trial-lpratio" && i + 1 < argc)
-        {
-            tuning.lowpassMinRatioDb = std::stof (argv[++i]);
-            continue;
-        }
-        if (a == "--trial-lpfloor" && i + 1 < argc)
-        {
-            tuning.lowpassAboveFloor = std::stof (argv[++i]);
+            tuning.repair.holdRange = std::stof (argv[++i]);
             continue;
         }
         if (a == "--trial-step" && i + 1 < argc)
         {
-            tuning.holdStep = std::stof (argv[++i]);
+            tuning.repair.holdStep = std::stof (argv[++i]);
             continue;
         }
         if (a == "--trial-srange" && i + 1 < argc)
         {
-            tuning.startRange = std::stof (argv[++i]);
+            tuning.repair.startRange = std::stof (argv[++i]);
             continue;
         }
         if (a == "--trial-sframes" && i + 1 < argc)
         {
-            tuning.startFrames = std::stoi (argv[++i]);
+            tuning.repair.startFrames = std::stoi (argv[++i]);
             continue;
         }
         if (a == "--trial-sjump" && i + 1 < argc)
         {
-            tuning.startJump = std::stof (argv[++i]);
+            tuning.repair.startJump = std::stof (argv[++i]);
             continue;
         }
         if (a == "--hum" && i + 2 < argc)
         {
-            tuning.humEnter = std::stof (argv[++i]);
-            tuning.humStay = std::stof (argv[++i]);
-            continue;
-        }
-        if (a == "--trial-octfix")
-        {
-            tuning.octaveFix = true;
-            continue;
-        }
-        if (a == "--trial-lowpass" && i + 1 < argc)
-        {
-            tuning.pitchLowpass = std::stof (argv[++i]);
-            continue;
-        }
-        if (a == "--trial-median")
-        {
-            tuning.pitchMedian = true;
+            tuning.repair.humEnter = std::stof (argv[++i]);
+            tuning.repair.humStay = std::stof (argv[++i]);
             continue;
         }
         if (a == "--octave-jump" && i + 1 < argc)
