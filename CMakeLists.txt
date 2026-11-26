@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VcabShift VERSION 1.2.5 LANGUAGES C CXX)
+project(VcabShift VERSION 1.2.6 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,7 +56,7 @@ target_link_libraries(vcabsh_render PRIVATE
 
 # ---- プラグイン（VST3）と単体アプリ（EXE） ----
 juce_add_plugin(VcabShift
-    COMPANY_NAME "VcabShift"
+    COMPANY_NAME "Vcab"
     PRODUCT_NAME "VcabShift"
     PLUGIN_MANUFACTURER_CODE Vcha
     PLUGIN_CODE Vcsh
