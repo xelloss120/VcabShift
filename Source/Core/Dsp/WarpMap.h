@@ -23,8 +23,9 @@ public:
 
     // 元の周波数 f が動く先
     float forward (float f) const;
-    // 動いた先の周波数 g の、元の周波数
-    float inverse (float g) const;
+    // 動いた先の周波数 g の、元の周波数。hint を渡すと、格子の位置をそこから探して書き戻す
+    // （g を少しずつ増やしながら何度も呼ぶときに、二分探索を省く。結果は渡さないときと同じ）
+    float inverse (float g, int* hint = nullptr) const;
     // 元の周波数 f での動く量（半音。単調に保った後の値）
     float shiftAt (float f) const;
 

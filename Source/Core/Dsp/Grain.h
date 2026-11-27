@@ -60,12 +60,14 @@ private:
     // FFT の区画ごとの「元の周波数」（写像の逆）と「一律に伸縮する前の周波数」の、包絡の格子の上の位置。
     // 写像・倍率・FFT の大きさが同じなら使い回す（区画ごとの対数の計算を省く）。
     // 流れごとに持つ（有声と無声は写像も断片の長さも違うので、1 つだと、両方の断片を作るつなぎの所で毎回作り直す）
+    // targetPos は写像と FFT の大きさ、sourcePos は倍率と FFT の大きさだけで決まるので、別々に作り直す
+    // （フォルマント追従では写像がフレームごとに変わるが、倍率はつまみを動かさない限り同じ）
     struct InverseTable
     {
         std::vector<float> targetPos, sourcePos;
         const WarpMap* warp = nullptr;
         unsigned version = 0;
-        int size = 0;
+        int targetSize = 0, sourceSize = 0;
         float ratio = 0.0f;
     };
     std::array<InverseTable, 2> inverseTables;

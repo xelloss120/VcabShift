@@ -89,15 +89,26 @@ float WarpMap::forward (float f) const
     return std::exp2 (outX[static_cast<size_t> (i)] + t * (outX[static_cast<size_t> (i + 1)] - outX[static_cast<size_t> (i)]));
 }
 
-float WarpMap::inverse (float g) const
+float WarpMap::inverse (float g, int* hint) const
 {
     const float y = std::log2 (std::max (g, 1.0f));
     if (y <= outX[0])
         return std::exp2 (kGridLo + (y - outX[0]));
     if (y >= outX[kGrid - 1])
         return std::exp2 (kGridLo + kGridStep * (kGrid - 1) + (y - outX[kGrid - 1]));
-    const auto it = std::upper_bound (outX.begin(), outX.end(), y);
-    const int i = static_cast<int> (it - outX.begin()) - 1;
+    // i: outX[i] <= y < outX[i + 1] となる位置（std::upper_bound の 1 つ前と同じ）
+    int i = 0;
+    if (hint != nullptr)
+    {
+        i = std::clamp (*hint, 0, kGrid - 2);
+        while (i > 0 && outX[static_cast<size_t> (i)] > y)
+            --i;
+        while (i < kGrid - 2 && outX[static_cast<size_t> (i + 1)] <= y)
+            ++i;
+        *hint = i;
+    }
+    else
+        i = static_cast<int> (std::upper_bound (outX.begin(), outX.end(), y) - outX.begin()) - 1;
     const float y0 = outX[static_cast<size_t> (i)], y1 = outX[static_cast<size_t> (i + 1)];
     const float t = (y - y0) / std::max (y1 - y0, 1.0e-9f);
     return std::exp2 (kGridLo + kGridStep * (static_cast<float> (i) + t));

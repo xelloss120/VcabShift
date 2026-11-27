@@ -48,7 +48,7 @@ private:
 
     std::vector<double> hamming, buf, autoc, lpc, tmp;
     std::vector<C> roots;
-    bool rootsValid = false;
+    bool rootsValid = false;             // roots が有限の値（次のフレームはここから始める）
 
     std::array<double, 4> value {};      // 今の値（Hz）
     std::array<int, 4> missing {};       // 追いかけられなかったフレームの数
@@ -59,7 +59,7 @@ private:
     std::array<double, 4> pendingRaw {}; // 保留している跳んだ値
 
     bool computeLpc (const float* x);
-    void findRoots();
+    bool findRoots();
 };
 
 } // namespace vcab

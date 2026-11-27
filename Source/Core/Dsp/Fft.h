@@ -45,21 +45,28 @@ public:
                 std::swap (x[i], x[j]);
         }
 
+        // 回転因子の虚部の符号（逆変換は共役）。複素数の掛け算は実部と虚部に分けて書く（std::complex と同じ計算の順）
+        const float sign = inverse ? -1.0f : 1.0f;
+        float* xf = reinterpret_cast<float*> (x);
+        const float* tw = reinterpret_cast<const float*> (twiddle.data());
         for (int len = 2; len <= n; len <<= 1)
         {
             const int half = len >> 1;
             const int step = maxN / len;
             for (int i = 0; i < n; i += len)
             {
+                float* a = xf + 2 * i;
+                float* b = xf + 2 * (i + half);
                 for (int k = 0; k < half; ++k)
                 {
-                    Complex w = twiddle[static_cast<size_t> (k * step)];
-                    if (inverse)
-                        w = std::conj (w);
-                    const Complex u = x[i + k];
-                    const Complex v = x[i + k + half] * w;
-                    x[i + k] = u + v;
-                    x[i + k + half] = u - v;
+                    const float wr = tw[2 * k * step], wi = sign * tw[2 * k * step + 1];
+                    const float br = b[2 * k], bi = b[2 * k + 1];
+                    const float vr = br * wr - bi * wi, vi = br * wi + bi * wr;
+                    const float ur = a[2 * k], ui = a[2 * k + 1];
+                    a[2 * k] = ur + vr;
+                    a[2 * k + 1] = ui + vi;
+                    b[2 * k] = ur - vr;
+                    b[2 * k + 1] = ui - vi;
                 }
             }
         }

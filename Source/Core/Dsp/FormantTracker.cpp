@@ -23,6 +23,10 @@ constexpr double kF4OverF3 = 3500.0 / 2700.0;
 // F1・F2 が 1 つにまとまった山の扱い
 constexpr double kMergeLo = 550.0, kMergeHi = 1300.0, kMergeMaxBw = 400.0, kMergeRatio = 1.3, kMergePenaltyBw = 300.0;
 constexpr int kMaxPeaks = 32;
+// 根の求め方（デュラン・ケルナー法）: 反復の上限、収束とみなす動き、回しきったときに使ってよい動き（単位円の上で 1e-6 は
+// 16kHz で約 0.003Hz。ふつうは 6〜8 回で 1e-9 を下回る）
+constexpr int kMaxIterations = 80;
+constexpr double kConvergedStep = 1.0e-9, kUsableStep = 1.0e-6;
 
 } // namespace
 
@@ -101,8 +105,8 @@ bool FormantTracker::computeLpc (const float* x)
     return true;
 }
 
-// デュラン・ケルナー法で z^p + a1 z^(p-1) + ... + ap の根を求める（前のフレームの根から始める）
-void FormantTracker::findRoots()
+// デュラン・ケルナー法で z^p + a1 z^(p-1) + ... + ap の根を求める（前のフレームの根から始める）。使える根が求まったら true
+bool FormantTracker::findRoots()
 {
     const int p = order;
     if (! rootsValid)
@@ -118,7 +122,8 @@ void FormantTracker::findRoots()
     };
 
     bool converged = false;
-    for (int iter = 0; iter < 80 && ! converged; ++iter)
+    double lastStep = 0.0;
+    for (int iter = 0; iter < kMaxIterations && ! converged; ++iter)
     {
         double maxStep = 0.0;
         for (int k = 0; k < p; ++k)
@@ -134,12 +139,17 @@ void FormantTracker::findRoots()
             roots[static_cast<size_t> (k)] = zk - step;
             maxStep = std::max (maxStep, std::abs (step));
         }
-        converged = maxStep < 1.0e-9;
+        converged = maxStep < kConvergedStep;
+        lastStep = maxStep;
     }
-    rootsValid = converged;
+    bool finite = true;
     for (const auto& r : roots)
         if (! std::isfinite (r.real()) || ! std::isfinite (r.imag()))
-            rootsValid = false;
+            finite = false;
+    // 回しきっても kConvergedStep に届かなかったときは、最後の動きが kUsableStep 未満なら使う（山の位置には十分な精度。
+    // 前はフレーム全体を捨てていた）。どちらにしても、値が有限なら次のフレームはこの根から始める（初めからやり直さない）
+    rootsValid = finite;
+    return finite && (converged || lastStep < kUsableStep);
 }
 
 void FormantTracker::analyze (const float* x, bool usable, const std::array<float, 4>& anchors, FormantFrame& out)
@@ -160,8 +170,7 @@ void FormantTracker::analyze (const float* x, bool usable, const std::array<floa
             out.lpc[static_cast<size_t> (k)] = static_cast<float> (lpc[static_cast<size_t> (k)]);
         out.lpcOrder = order;
         out.lpcValid = true;
-        findRoots();
-        if (rootsValid)
+        if (findRoots())
         {
             for (const auto& r : roots)
             {

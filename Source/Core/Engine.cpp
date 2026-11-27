@@ -699,6 +699,16 @@ void Engine::synthesize (int64_t o, int64_t e)
     // 声の出だし（無声の後の最初の有声の印）だけは startVoicedRun で置く
     if (nextVoiced < static_cast<double> (o))
         nextVoiced = static_cast<double> (o);
+    // 断片を置くのを次のブロックへ回してよいか。断片は順に置くので、周期が急に長くなると（ガラガラ声の保ちや「んー」の対策で
+    // 周期が倍になるなど）、次の断片が今の断片より前から始まることがある。今の断片の書き始めだけで決めると、次の断片の頭が
+    // ブロックの切れ目で切り捨てられ（ブロックの大きさで出力が変わり、波形も途切れる）。そこで、使う印とフレームが決まる
+    // 入力の時刻（avail = nextVoiced − 周期の上限 ＋ 遅延）にもう届いていれば、書き始めがまだ先でも置く。
+    // 届いていなければ、半分の長さが周期の上限以下の断片はこのブロックにかからないので、次のブロックへ回せる
+    const auto voicedLater = [this, e] (int halfOut)
+    {
+        return std::floor (nextVoiced) - tMax > static_cast<double> (e)
+               && nextVoiced - halfOut >= static_cast<double> (e);
+    };
     for (int guard = 0; guard < 8192 && markCount > 0; ++guard)
     {
         if (! voicedRun && startVoicedRun (o, p))
@@ -731,7 +741,7 @@ void Engine::synthesize (int64_t o, int64_t e)
                 Mark vm = tailMark;
                 vm.t = tailMark.t + static_cast<int64_t> (std::llround (std::max (0.0, k) * tailMark.period));
                 const VoicedShape shape = voicedShape (vm, frameAt (static_cast<double> (vm.t), avail));
-                if (nextVoiced - shape.halfOut >= static_cast<double> (e))
+                if (voicedLater (shape.halfOut))
                     break;
                 if (! makeVoicedGrain (vm, shape))
                     break;
@@ -752,7 +762,7 @@ void Engine::synthesize (int64_t o, int64_t e)
             continue;
         }
         const VoicedShape shape = voicedShape (m, frameAt (static_cast<double> (m.t), avail));
-        if (nextVoiced - shape.halfOut >= static_cast<double> (e))
+        if (voicedLater (shape.halfOut))
             break;
         if (! makeVoicedGrain (m, shape))
             break;

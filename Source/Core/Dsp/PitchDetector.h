@@ -43,7 +43,9 @@ public:
 private:
     static constexpr int kThresholds = 100;
     static constexpr int kBinsPerSemitone = 10;
-    static constexpr int kMaxCandidates = 32;
+    // 候補（確率を持つ谷）は、しきい値の段ごとに 1 つと一番深い谷なので、kThresholds + 1 を超えない（全部を持つ）。
+    // 前は 32 で、それより多いと長い周期（低い高さ）の候補が落ちていた
+    static constexpr int kMaxCandidates = kThresholds + 1;
 
     struct Candidate
     {

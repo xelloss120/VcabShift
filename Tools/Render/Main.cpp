@@ -11,6 +11,8 @@
 // --lookahead n / --octave-jump p: ピッチ検出の先読みのフレームの数と、オクターブ跳びの確率（開発用。初期値 2 / 0.001）。
 // --hum e s: 「んー」の対策の、入るときと続けるときの相関の差（開発用。初期値 0.05 0。e を 0 にすると使わない）。
 // --first-period m l: ピッチ検出の 1 周期目の優先の、深さの差 m と深さの上限 l（開発用。初期値 0.05 0.5。差を 0 にすると使わない）。
+// --set-at 秒 キー=値: その時刻（入力の時刻）からパラメータを変える（複数可。つまみを途中で動かしたときの確かめ用）。
+//   ブロックはその時刻で区切る。探索下限を変えると遅延も変わるが、--align で詰めるのは最初の遅延の分だけ。
 #include "Engine.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -40,6 +42,34 @@ static int runChecked (int argc, char** argv)
     }
 }
 
+// キー=値を読む。NaN と範囲の外は、プラグインと同じく表の範囲に収める（エンジンはこの範囲の値しか受け取らない前提）
+static bool parseKeyValue (const std::string& a, vcab::P& id, float& value)
+{
+    const auto eq = a.find ('=');
+    if (eq == std::string::npos)
+        return false;
+    for (const auto& p : vcab::paramTable())
+        if (a.substr (0, eq) == p.key)
+        {
+            const float v = std::stof (a.substr (eq + 1));
+            const float c = std::isnan (v) ? p.defaultValue : std::clamp (v, p.minValue, p.maxValue);
+            if (! (c == v))
+                std::printf ("note: %s=%g is outside %g..%g, using %g\n", p.key, v, p.minValue, p.maxValue, c);
+            id = p.id;
+            value = c;
+            return true;
+        }
+    return false;
+}
+
+// --set-at で途中から変えるパラメータ
+struct Change
+{
+    double seconds = 0.0;
+    vcab::P id {};
+    float value = 0.0f;
+};
+
 static int run (int argc, char** argv)
 {
     if (argc < 3)
@@ -49,6 +79,7 @@ static int run (int argc, char** argv)
     }
 
     auto values = vcab::defaultValues();
+    std::vector<Change> changes;
     bool align = false;
     int block = 256;
     std::string trackPath, framesPath, marksPath, grainsPath, streamsPath, backfillPath, holdPath;
@@ -63,7 +94,12 @@ static int run (int argc, char** argv)
         }
         if (a == "--block" && i + 1 < argc)
         {
-            block = std::max (1, std::stoi (argv[++i]));
+            // 上限は約 22 秒（48kHz）。エンジンは 1 秒 ＋ ブロックの分の輪を確保するので、大きすぎると確保が巨大になる
+            constexpr int kMaxBlock = 1 << 20;
+            const int b = std::stoi (argv[++i]);
+            block = std::clamp (b, 1, kMaxBlock);
+            if (block != b)
+                std::printf ("note: --block %d is outside 1..%d, using %d\n", b, kMaxBlock, block);
             continue;
         }
         if (a == "--no-cues")
@@ -169,26 +205,31 @@ static int run (int argc, char** argv)
             trackPath = argv[++i];
             continue;
         }
-        const auto eq = a.find ('=');
-        bool ok = false;
-        if (eq != std::string::npos)
-            for (const auto& p : vcab::paramTable())
-                if (a.substr (0, eq) == p.key)
-                {
-                    const float v = std::stof (a.substr (eq + 1));
-                    // NaN と範囲の外は、プラグインと同じく表の範囲に収める（エンジンはこの範囲の値しか受け取らない前提）
-                    const float c = std::isnan (v) ? p.defaultValue : std::clamp (v, p.minValue, p.maxValue);
-                    if (! (c == v))
-                        std::printf ("note: %s=%g is outside %g..%g, using %g\n", p.key, v, p.minValue, p.maxValue, c);
-                    values[static_cast<size_t> (p.id)] = c;
-                    ok = true;
-                }
-        if (! ok)
+        if (a == "--set-at" && i + 2 < argc)
+        {
+            const double at = std::stod (argv[++i]);
+            const std::string kv = argv[++i];
+            Change c;
+            if (! (at >= 0.0) || ! parseKeyValue (kv, c.id, c.value))
+            {
+                std::printf ("bad --set-at: %s %s\n", argv[i - 1], kv.c_str());
+                return 1;
+            }
+            c.seconds = at;
+            changes.push_back (c);
+            continue;
+        }
+        vcab::P id {};
+        float v = 0.0f;
+        if (! parseKeyValue (a, id, v))
         {
             std::printf ("unknown argument: %s\n", a.c_str());
             return 1;
         }
+        values[static_cast<size_t> (id)] = v;
     }
+    // 途中で変えるパラメータは時刻の順に（同じ時刻なら、書いた順）
+    std::stable_sort (changes.begin(), changes.end(), [] (const Change& x, const Change& y) { return x.seconds < y.seconds; });
 
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
@@ -256,9 +297,23 @@ static int run (int argc, char** argv)
     juce::ScopedNoDenormals noDenormals;
     const auto start = std::chrono::steady_clock::now();
     int lastTrack = -1;
-    for (int pos = 0; pos < total; pos += kBlock)
+    size_t nextChange = 0;
+    const auto changeAt = [&] (size_t k) { return static_cast<int64_t> (std::llround (changes[k].seconds * fs)); };
+    for (int pos = 0, n = 0; pos < total; pos += n)
     {
-        const int n = std::min (kBlock, total - pos);
+        // --set-at: その時刻になったら変える（プラグインがブロックの頭で読むのと同じ形。ブロックはその時刻で区切る）
+        bool changed = false;
+        while (nextChange < changes.size() && changeAt (nextChange) <= pos)
+        {
+            values[static_cast<size_t> (changes[nextChange].id)] = changes[nextChange].value;
+            ++nextChange;
+            changed = true;
+        }
+        if (changed)
+            engine.setSettings (vcab::Settings::fromValues (values));
+        n = std::min (kBlock, total - pos);
+        if (nextChange < changes.size())
+            n = static_cast<int> (std::min<int64_t> (n, changeAt (nextChange) - pos));
         const float* chans[2] = { zeros.data(), zeros.data() };
         for (int c = 0; c < std::min (numCh, 2); ++c)
             if (pos < len)
@@ -333,21 +388,30 @@ static int run (int argc, char** argv)
     if (! streamsPath.empty())
     {
         // 3 チャンネル、32 ビット浮動小数（有声の流れ、無声の流れ、つなぎの角度）。時刻は出力（遅延を詰めない）
+        // 本体の出力と同じく、一時ファイルに書いてから置き換える
         const juce::File sf { juce::String (juce::CharPointer_UTF8 (streamsPath.c_str())) };
-        sf.deleteFile();
-        std::unique_ptr<juce::OutputStream> ss = sf.createOutputStream();
-        const auto so = juce::AudioFormatWriterOptions {}.withSampleRate (fs).withNumChannels (3).withBitsPerSample (32)
-                            .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-        std::unique_ptr<juce::AudioFormatWriter> sw (wav.createWriterFor (ss, so));
-        std::vector<float> ch[3];
-        for (auto& c : ch)
-            c.reserve (streamLog.size());
-        for (const auto& r : streamLog)
-            for (int k = 0; k < 3; ++k)
-                ch[k].push_back (r[static_cast<size_t> (k)]);
-        const float* cp[3] = { ch[0].data(), ch[1].data(), ch[2].data() };
-        if (sw != nullptr)
-            sw->writeFromFloatArrays (cp, 3, static_cast<int> (streamLog.size()));
+        juce::TemporaryFile tmpStreams (sf);
+        bool written = false;
+        {
+            std::unique_ptr<juce::OutputStream> ss = tmpStreams.getFile().createOutputStream();
+            const auto so = juce::AudioFormatWriterOptions {}.withSampleRate (fs).withNumChannels (3).withBitsPerSample (32)
+                                .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+            std::unique_ptr<juce::AudioFormatWriter> sw (ss != nullptr ? wav.createWriterFor (ss, so) : nullptr);
+            std::vector<float> ch[3];
+            for (auto& c : ch)
+                c.reserve (streamLog.size());
+            for (const auto& r : streamLog)
+                for (int k = 0; k < 3; ++k)
+                    ch[k].push_back (r[static_cast<size_t> (k)]);
+            const float* cp[3] = { ch[0].data(), ch[1].data(), ch[2].data() };
+            if (sw != nullptr)
+                written = sw->writeFromFloatArrays (cp, 3, static_cast<int> (streamLog.size()));
+        }
+        if (! written || ! tmpStreams.overwriteTargetFileWithTemporary())
+        {
+            std::printf ("cannot write %s\n", streamsPath.c_str());
+            return 1;
+        }
     }
 
     if (! holdPath.empty())

@@ -42,6 +42,7 @@ void GrainMaker::prepare (double sampleRate, int maxHalfIn, int maxHalfOut, int 
         t.targetPos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
         t.sourcePos.assign (static_cast<size_t> (n / 2 + 1), 0.0f);
         t.warp = nullptr;
+        t.targetSize = t.sourceSize = 0; // 標本化周波数が変わると周波数の並びも変わるので、どちらも作り直させる
     }
     gridLo = std::log2 (kGridLowHz);
     gridStep = (static_cast<float> (std::log2 (fs * 0.5)) - gridLo) / static_cast<float> (kEnvGrid - 1);
@@ -205,17 +206,26 @@ void GrainMaker::make (const float* seg, int centre, float halfIn, int halfOut, 
     fft.transform (spec2.data(), mo, false);
 
     InverseTable& inv = inverseTables[static_cast<size_t> (stream)];
-    if (warp != inv.warp || warp->version() != inv.version || mo != inv.size || ratio != inv.ratio)
+    if (warp != inv.warp || warp->version() != inv.version || mo != inv.targetSize)
+    {
+        int hint = 0;
+        for (int b = 0; b <= mo / 2; ++b)
+        {
+            const float f = static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo);
+            inv.targetPos[static_cast<size_t> (b)] = gridPos (warp->inverse (f, &hint));
+        }
+        inv.warp = warp;
+        inv.version = warp->version();
+        inv.targetSize = mo;
+    }
+    if (mo != inv.sourceSize || ratio != inv.ratio)
     {
         for (int b = 0; b <= mo / 2; ++b)
         {
             const float f = static_cast<float> (b) * static_cast<float> (fs) / static_cast<float> (mo);
-            inv.targetPos[static_cast<size_t> (b)] = gridPos (warp->inverse (f));
             inv.sourcePos[static_cast<size_t> (b)] = gridPos (f / ratio);
         }
-        inv.warp = warp;
-        inv.version = warp->version();
-        inv.size = mo;
+        inv.sourceSize = mo;
         inv.ratio = ratio;
     }
     for (int b = 0; b <= mo / 2; ++b)
